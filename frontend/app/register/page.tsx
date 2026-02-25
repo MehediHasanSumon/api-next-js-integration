@@ -2,63 +2,56 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import api from "@/lib/axios";
+import { AxiosError } from "axios";
 
 export default function Register() {
+  const router = useRouter();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
-  const [errors, setErrors] = useState<any>({});
-  const [success, setSuccess] = useState("");
+  const [errors, setErrors] = useState<Record<string, string[]>>({});
+
+  const validateEmail = (email: string) => {
+    const regex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return regex.test(email);
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrors({});
-    setSuccess("");
 
-    if (password !== confirmPassword) {
-      setErrors({ password_confirmation: ["Password মিলছে না!"] });
+    // Frontend validation
+    const newErrors: Record<string, string[]> = {};
+    if (!name) newErrors.name = ["Name is required"];
+    if (!email) newErrors.email = ["Email is required"];
+    else if (!validateEmail(email)) newErrors.email = ["Invalid email format"];
+    if (!password) newErrors.password = ["Password is required"];
+    else if (password.length < 8) newErrors.password = ["Password must be at least 8 characters"];
+    if (!confirmPassword) newErrors.password_confirmation = ["Please confirm your password"];
+    else if (password !== confirmPassword) newErrors.password_confirmation = ["Passwords do not match"];
+
+    if (Object.keys(newErrors).length > 0) {
+      setErrors(newErrors);
       return;
     }
 
     setLoading(true);
 
     try {
-      // CSRF cookie নিচ্ছি
-      await fetch("http://localhost:8000/sanctum/csrf-cookie", {
-        method: "GET",
-        credentials: "include",
+      await api.post('/register', {
+        name,
+        email,
+        password,
+        password_confirmation: confirmPassword,
       });
-
-      const response = await fetch("http://localhost:8000/api/register", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Accept": "application/json",
-        },
-        credentials: "include",
-        body: JSON.stringify({
-          name,
-          email,
-          password,
-          password_confirmation: confirmPassword,
-        }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        setErrors(data.errors || {});
-      } else {
-        setSuccess("Registration successful!");
-        setName("");
-        setEmail("");
-        setPassword("");
-        setConfirmPassword("");
-      }
+      router.push("/dashboard");
     } catch (error) {
-      setErrors({ general: ["Network error. Please try again."] });
+      const axiosError = error as AxiosError<{ errors?: Record<string, string[]> }>;
+      setErrors(axiosError.response?.data?.errors || { general: ["Network error. Please try again."] });
     } finally {
       setLoading(false);
     }
@@ -71,14 +64,8 @@ export default function Register() {
           Register
         </h1>
 
-        {success && (
-          <div className="mb-4 p-3 bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200 rounded-lg">
-            {success}
-          </div>
-        )}
-
         {errors.general && (
-          <div className="mb-4 p-3 bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200 rounded-lg">
+          <div className="mb-4 p-3 bg-red-100 dark:bg-red-900/30 border border-red-400 dark:border-red-700 text-red-700 dark:text-red-400 rounded-lg text-sm">
             {errors.general[0]}
           </div>
         )}

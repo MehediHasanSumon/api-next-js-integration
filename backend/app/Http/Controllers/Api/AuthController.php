@@ -24,12 +24,12 @@ class AuthController extends Controller
             'password' => Hash::make($request->password),
         ]);
 
-        $token = $user->createToken('auth_token')->plainTextToken;
+        $token = $user->createToken('auth_token', ['*'], now()->addDays(7))->plainTextToken;
 
         return response()->json([
             'message' => 'Registration successful',
             'user' => $user,
-        ])->cookie('auth_token', $token, 60 * 24 * 7, '/', null, true, true, false, 'strict');
+        ])->cookie('auth_token', $token, 60 * 24 * 7, '/', null, request()->secure(), true, false, 'strict');
     }
 
     public function login(Request $request)
@@ -47,12 +47,13 @@ class AuthController extends Controller
             ]);
         }
 
-        $token = $user->createToken('auth_token')->plainTextToken;
+        $user->tokens()->delete();
+        $token = $user->createToken('auth_token', ['*'], now()->addDays(7))->plainTextToken;
 
         return response()->json([
             'message' => 'Login successful',
             'user' => $user,
-        ])->cookie('auth_token', $token, 60 * 24 * 7, '/', null, true, true, false, 'strict');
+        ])->cookie('auth_token', $token, 60 * 24 * 7, '/', null, request()->secure(), true, false, 'strict');
     }
 
     public function logout(Request $request)
