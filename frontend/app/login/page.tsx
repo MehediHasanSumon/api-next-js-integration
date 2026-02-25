@@ -5,6 +5,11 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import api from "@/lib/axios";
 import { AxiosError } from "axios";
+import { normalizeEmail } from "@/lib/utils";
+import Input from "@/components/Input";
+import Button from "@/components/Button";
+import Checkbox from "@/components/Checkbox";
+import Head from "@/components/Head";
 
 export default function Login() {
   const router = useRouter();
@@ -36,7 +41,7 @@ export default function Login() {
 
     setLoading(true);
     try {
-      await api.post('/login', { email, password });
+      await api.post('/login', { email: normalizeEmail(email), password });
       router.push("/dashboard");
     } catch (error) {
       const axiosError = error as AxiosError<{ errors?: Record<string, string>; message?: string }>;
@@ -51,7 +56,12 @@ export default function Login() {
   };
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-slate-100 dark:bg-slate-900">
+    <>
+      <Head>
+        <title>Sign In</title>
+        <meta name="description" content="Sign in to your dashboard account" />
+      </Head>
+      <div className="relative min-h-screen overflow-hidden bg-slate-100 dark:bg-slate-900">
       <div className="pointer-events-none absolute -top-32 -right-24 h-96 w-96 rounded-full bg-gradient-to-br from-sky-200 via-white to-transparent dark:from-sky-900 dark:via-slate-800 blur-3xl"></div>
       <div className="pointer-events-none absolute -bottom-32 -left-24 h-96 w-96 rounded-full bg-gradient-to-br from-amber-200 via-white to-transparent dark:from-amber-900 dark:via-slate-800 blur-3xl"></div>
 
@@ -62,61 +72,46 @@ export default function Login() {
             <h1 className="text-xl font-semibold text-slate-900 dark:text-white">Sign in to Dashboard</h1>
           </div>
           <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">Email</label>
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className={`mt-2 w-full rounded-xl border px-4 py-3 text-sm bg-white dark:bg-slate-700 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none ${errors.email ? "border-red-500 focus:border-red-500" : "border-slate-200 dark:border-slate-600 focus:border-blue-500"
-                  }`}
-                placeholder="you@example.com"
-              />
-              {errors.email && <p className="mt-1 text-xs text-red-600 dark:text-red-400">{errors.email}</p>}
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">Password</label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className={`mt-2 w-full rounded-xl border px-4 py-3 text-sm bg-white dark:bg-slate-700 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none ${errors.password ? "border-red-500 focus:border-red-500" : "border-slate-200 dark:border-slate-600 focus:border-blue-500"
-                  }`}
-                placeholder="Enter your password"
-              />
-              {errors.password && <p className="mt-1 text-xs text-red-600 dark:text-red-400">{errors.password}</p>}
-            </div>
+            <Input
+              label="Email"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@example.com"
+              error={errors.email}
+            />
+            <Input
+              label="Password"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Enter your password"
+              error={errors.password}
+            />
             {errors.general && <p className="text-xs text-amber-600 dark:text-amber-400">{errors.general}</p>}
             <div className="flex items-center justify-between text-sm">
-              <label className="flex items-center cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={rememberMe}
-                  onChange={(e) => setRememberMe(e.target.checked)}
-                  className="mr-2 cursor-pointer"
-                />
-                <span className="text-slate-600 dark:text-slate-400">Remember me</span>
-              </label>
-              <Link href="/forgot-password" className="text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300">
+              <Checkbox
+                label="Remember me"
+                checked={rememberMe}
+                onChange={(e) => setRememberMe(e.target.checked)}
+              />
+              <Link href="/forgot-password" className="text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 cursor-pointer">
                 Forgot password?
               </Link>
             </div>
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full rounded-xl bg-blue-600 dark:bg-blue-500 px-4 py-3 text-sm font-semibold text-white shadow-lg transition hover:bg-blue-700 dark:hover:bg-blue-600 disabled:bg-blue-400 dark:disabled:bg-blue-700 disabled:cursor-not-allowed"
-            >
-              {loading ? "Loading..." : "Sign In"}
-            </button>
+            <Button type="submit" disabled={loading} loading={loading}>
+              Sign In
+            </Button>
           </form>
           <p className="mt-4 text-center text-sm text-slate-600 dark:text-slate-400">
             Don&apos;t have an account?{" "}
-            <Link href="/register" className="text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 font-medium">
+            <Link href="/register" className="text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 font-medium cursor-pointer">
               Create account
             </Link>
           </p>
         </div>
       </main>
     </div>
+    </>
   );
 }
