@@ -1,23 +1,23 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useRouter } from "next/navigation";
-import api from "@/lib/axios";
+import { useAppDispatch, useAppSelector } from "@/store/hooks";
+import { fetchUser } from "@/store/authSlice";
 
 export default function AuthGuard({ children }: { children: React.ReactNode }) {
   const router = useRouter();
-  const [loading, setLoading] = useState(true);
+  const dispatch = useAppDispatch();
+  const { loading } = useAppSelector((state) => state.auth);
 
   useEffect(() => {
-    api.get('/user')
-      .then(() => setLoading(false))
-      .catch(() => router.push('/login'));
-  }, [router]);
+    dispatch(fetchUser()).unwrap().catch(() => router.push('/login'));
+  }, [dispatch, router]);
 
   if (loading) {
     return (
       <div className="min-h-screen bg-zinc-50 dark:bg-black flex items-center justify-center">
-        <p className="text-xl text-zinc-600 dark:text-zinc-400">Loading...</p>
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-zinc-900 dark:border-white"></div>
       </div>
     );
   }
