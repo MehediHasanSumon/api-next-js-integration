@@ -21,23 +21,25 @@ export default function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose:
       ></div>
       
       <aside
-        className={`sidebar-transition fixed inset-y-0 left-0 z-40 w-72 border-r border-slate-200 bg-white/90 backdrop-blur ${isOpen ? "translate-x-0" : "-translate-x-full"}`}
+        className={`sidebar-transition fixed inset-y-0 left-0 z-40 flex w-72 flex-col border-r border-slate-200 bg-white/90 backdrop-blur ${isOpen ? "translate-x-0" : "-translate-x-full"}`}
       >
-        <div className="flex h-16 items-center justify-between border-b border-slate-200 px-4">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-500 text-white font-semibold">AP</div>
-            <div className="text-lg font-semibold tracking-wide">
-              <span className="text-rose-500">D</span>
-              <span className="text-orange-500">D</span>
-              <span className="text-amber-500">R</span>
-              <span className="text-emerald-500">B</span>
-              <span className="text-sky-500">I</span>
-              <span className="text-violet-500">T</span>
+        <div className="border-b border-slate-200 p-4">
+          <div className="relative overflow-hidden rounded-2xl border border-sky-100 bg-gradient-to-br from-white via-sky-50 to-blue-100 px-3 py-3 shadow-sm">
+            <span className="pointer-events-none absolute -right-5 -top-5 h-16 w-16 rounded-full bg-sky-300/25 blur-xl"></span>
+            <span className="pointer-events-none absolute -bottom-5 -left-5 h-16 w-16 rounded-full bg-blue-300/20 blur-xl"></span>
+            <div className="relative flex items-center gap-3">
+              <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-slate-900 text-sm font-bold tracking-wide text-white shadow-md">
+                DB
+              </div>
+              <div>
+                <p className="text-lg font-extrabold tracking-[0.16em] text-slate-900">DDRBIT</p>
+                <p className="text-[10px] font-medium uppercase tracking-[0.22em] text-slate-500">Control Center</p>
+              </div>
             </div>
           </div>
         </div>
 
-        <nav className="h-[calc(100%-4rem)] overflow-y-auto px-4 py-6">
+        <nav className="flex-1 overflow-y-auto px-4 py-6">
           <Link
             href="/dashboard"
             className="mt-2 flex cursor-pointer items-center gap-3 rounded-xl bg-gradient-to-r from-slate-900 to-slate-800 px-3.5 py-3 text-sm font-semibold text-white shadow-soft ring-1 ring-slate-800/70 transition-all duration-200 hover:from-slate-800 hover:to-slate-700 hover:shadow-md"
