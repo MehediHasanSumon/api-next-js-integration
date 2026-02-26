@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\User;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\ValidationException;
 
@@ -24,12 +25,12 @@ class AuthController extends Controller
             'password' => Hash::make($request->password),
         ]);
 
-        $token = $user->createToken('auth_token', ['*'], now()->addDays(7))->plainTextToken;
+        Auth::login($user);
 
         return response()->json([
             'message' => 'Registration successful',
             'user' => $user,
-        ])->cookie('auth_token', $token, 60 * 24 * 7, '/', null, request()->secure(), true, false, 'strict');
+        ]);
     }
 
     public function login(Request $request)
@@ -47,22 +48,21 @@ class AuthController extends Controller
             ]);
         }
 
-        $user->tokens()->delete();
-        $token = $user->createToken('auth_token', ['*'], now()->addDays(7))->plainTextToken;
+        Auth::login($user);
 
         return response()->json([
             'message' => 'Login successful',
             'user' => $user,
-        ])->cookie('auth_token', $token, 60 * 24 * 7, '/', null, request()->secure(), true, false, 'strict');
+        ]);
     }
 
     public function logout(Request $request)
     {
-        $request->user()->currentAccessToken()->delete();
+        Auth::logout();
 
         return response()->json([
             'message' => 'Logout successful'
-        ])->cookie('auth_token', '', -1);
+        ]);
     }
 
     public function user(Request $request)

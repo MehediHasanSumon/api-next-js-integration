@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import api from "@/lib/axios";
 
 export default function Dashboard() {
+  const [user, setUser] = useState<{ id: number; name: string; email: string } | null>(null);
   const [packets, setPackets] = useState<{ 
     id: number; 
     timestamp: string; 
@@ -15,6 +17,10 @@ export default function Dashboard() {
     status: string 
   }[]>([]);
   const [currentSpeed, setCurrentSpeed] = useState(0);
+
+  useEffect(() => {
+    api.get('/user').then((res) => setUser(res.data));
+  }, []);
 
   useEffect(() => {
     let packetId = 1;
@@ -50,6 +56,17 @@ export default function Dashboard() {
         <h1 className="text-4xl font-bold mb-8 text-black dark:text-white">
           Dashboard
         </h1>
+
+        <div className="bg-white dark:bg-zinc-900 rounded-lg shadow-lg p-6 mb-6">
+          <h2 className="text-2xl font-semibold mb-4 text-black dark:text-white">
+            User Information
+          </h2>
+          <div className="space-y-2">
+            <p className="text-zinc-700 dark:text-zinc-300"><span className="font-semibold">Name:</span> {user?.name}</p>
+            <p className="text-zinc-700 dark:text-zinc-300"><span className="font-semibold">Email:</span> {user?.email}</p>
+            <p className="text-zinc-700 dark:text-zinc-300"><span className="font-semibold">ID:</span> {user?.id}</p>
+          </div>
+        </div>
 
         <div className="bg-white dark:bg-zinc-900 rounded-lg shadow-lg p-6 mb-6">
           <h2 className="text-2xl font-semibold mb-2 text-black dark:text-white">
