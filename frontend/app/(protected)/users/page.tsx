@@ -11,6 +11,7 @@ import FormInput from "@/components/form/FormInput";
 import FormLabel from "@/components/form/FormLabel";
 import FormOptionCheckbox from "@/components/form/FormOptionCheckbox";
 import FormSelect from "@/components/form/FormSelect";
+import TableSkeleton from "@/components/skeleton/TableSkeleton";
 
 interface Role {
   id: number;
@@ -545,7 +546,7 @@ export default function UsersManagementPage() {
           </div>
 
           {loading ? (
-            <p className="mt-4 text-sm text-slate-500">Loading users...</p>
+            <TableSkeleton columns={5} rows={6} />
           ) : (
             <>
               <div className="mt-4 overflow-x-auto">

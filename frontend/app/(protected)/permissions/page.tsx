@@ -7,6 +7,7 @@ import api from "@/lib/axios";
 import ProtectedShell from "@/components/ProtectedShell";
 import Button from "@/components/Button";
 import FormInput from "@/components/form/FormInput";
+import TableSkeleton from "@/components/skeleton/TableSkeleton";
 
 interface Permission {
   id: number;
@@ -348,7 +349,7 @@ export default function PermissionManagementPage() {
           </div>
 
           {loading ? (
-            <p className="mt-4 text-sm text-slate-500">Loading permissions...</p>
+            <TableSkeleton columns={2} rows={6} />
           ) : (
             <>
               <div className="mt-4 overflow-x-auto">

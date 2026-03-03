@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import Button from "@/components/Button";
 
 const managementLinks = [
@@ -13,13 +13,9 @@ const managementLinks = [
 
 export default function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   const pathname = usePathname();
-  const isManagementActive = useMemo(
-    () => managementLinks.some((link) => pathname === link.href || pathname.startsWith(`${link.href}/`)),
-    [pathname]
-  );
 
   const [dropdowns, setDropdowns] = useState({ userManagements: true });
-  const isUserManagementsOpen = dropdowns.userManagements || isManagementActive;
+  const isUserManagementsOpen = dropdowns.userManagements;
 
   const closeOnMobile = () => {
     if (window.innerWidth < 1024) {

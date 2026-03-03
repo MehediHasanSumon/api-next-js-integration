@@ -17,11 +17,25 @@ export default function Topbar({
   const dispatch = useAppDispatch();
   const user = useAppSelector((state) => state.auth.user);
   const [showProfile, setShowProfile] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
   const profileMenuRef = useRef<HTMLDivElement | null>(null);
+  const userInitial = (user?.name?.trim().charAt(0) || "U").toUpperCase();
+  const userRole = user?.roles?.[0] || "Member";
 
   const handleLogout = async () => {
-    await dispatch(logout());
-    router.push('/login');
+    if (loggingOut) {
+      return;
+    }
+
+    setLoggingOut(true);
+
+    try {
+      await dispatch(logout()).unwrap();
+      router.replace("/login");
+    } finally {
+      setLoggingOut(false);
+      setShowProfile(false);
+    }
   };
 
   useEffect(() => {
@@ -72,36 +86,81 @@ export default function Topbar({
             type="button"
             onClick={() => setShowProfile(!showProfile)}
             variant="outline"
-            size="sm"
-            className="rounded-full px-2 py-1.5"
+            size="md"
+            className="h-10 rounded-xl border-slate-200 bg-white px-2.5 shadow-none hover:bg-slate-50"
+            aria-haspopup="menu"
+            aria-expanded={showProfile}
           >
-            <div className="h-9 w-9 rounded-full bg-sky-500 flex items-center justify-center text-white font-semibold">
-              {user?.name?.charAt(0) || 'U'}
+            <div className="flex h-7 w-7 items-center justify-center rounded-full bg-sky-500 text-xs font-semibold text-white">
+              {userInitial}
             </div>
             <div className="hidden text-left md:block">
-              <p className="text-sm font-semibold text-slate-900">{user?.name || 'User'}</p>
-              <p className="text-xs text-slate-500">Admin</p>
+              <p className="max-w-[140px] truncate text-sm font-semibold text-slate-900">{user?.name || "User"}</p>
+              <p className="text-xs text-slate-500">{userRole}</p>
             </div>
-            <svg className="h-4 w-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"/></svg>
+            <svg
+              className={`h-4 w-4 text-slate-400 transition-transform duration-200 ${showProfile ? "rotate-180" : ""}`}
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+            </svg>
           </Button>
           {showProfile && (
-            <div className="absolute right-0 mt-2 w-48 rounded-xl border border-slate-200 bg-white shadow-soft">
-              <Button type="button" variant="ghost" size="sm" fullWidth className="justify-start rounded-none px-4 py-2 text-left text-sm font-medium text-slate-700">
-                Profile
+            <div className="absolute right-0 mt-2 w-64 rounded-xl border border-slate-200 bg-white p-2 shadow-lg">
+              <div className="mb-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                <p className="truncate text-sm font-semibold text-slate-900">{user?.name || "User"}</p>
+                <p className="truncate text-xs text-slate-500">{user?.email || "No email"}</p>
+                <p className="mt-1 inline-flex rounded-md bg-white px-2 py-0.5 text-[11px] font-medium capitalize text-slate-600">
+                  {userRole}
+                </p>
+              </div>
+
+              <Button
+                type="button"
+                variant="ghost"
+                size="md"
+                fullWidth
+                className="justify-start rounded-lg border-0 px-3 text-sm font-medium text-slate-700 shadow-none"
+                onClick={() => setShowProfile(false)}
+              >
+                My Profile
               </Button>
-              <Button type="button" variant="ghost" size="sm" fullWidth className="justify-start rounded-none px-4 py-2 text-left text-sm font-medium text-slate-700">
+
+              <Button
+                type="button"
+                variant="ghost"
+                size="md"
+                fullWidth
+                className="justify-start rounded-lg border-0 px-3 text-sm font-medium text-slate-700 shadow-none"
+                onClick={() => setShowProfile(false)}
+              >
                 Settings
               </Button>
-              <div className="border-t border-slate-100"></div>
+
+              <div className="my-2 border-t border-slate-100"></div>
+
               <Button
                 type="button"
                 onClick={handleLogout}
-                variant="danger"
-                size="sm"
+                variant="ghost"
+                size="md"
                 fullWidth
-                className="justify-start rounded-none px-4 py-2 text-left text-sm font-medium"
+                disabled={loggingOut}
+                className="justify-start rounded-lg border-0 px-3 text-sm font-medium text-rose-600 shadow-none hover:bg-rose-50 disabled:opacity-100"
               >
-                Logout
+                {loggingOut ? (
+                  <span className="inline-flex items-center gap-2">
+                    <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                      <circle cx="12" cy="12" r="9" className="opacity-25" stroke="currentColor" strokeWidth="3"></circle>
+                      <path d="M21 12a9 9 0 00-9-9" className="opacity-90" stroke="currentColor" strokeWidth="3" strokeLinecap="round"></path>
+                    </svg>
+                    Logging out...
+                  </span>
+                ) : (
+                  "Logout"
+                )}
               </Button>
             </div>
           )}

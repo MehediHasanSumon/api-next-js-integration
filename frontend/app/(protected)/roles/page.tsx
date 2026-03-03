@@ -10,6 +10,7 @@ import FormInput from "@/components/form/FormInput";
 import FormLabel from "@/components/form/FormLabel";
 import FormOptionCheckbox from "@/components/form/FormOptionCheckbox";
 import FormSelect from "@/components/form/FormSelect";
+import TableSkeleton from "@/components/skeleton/TableSkeleton";
 
 interface Permission {
   id: number;
@@ -426,7 +427,7 @@ export default function RolesManagementPage() {
           </div>
 
           {loading ? (
-            <p className="mt-4 text-sm text-slate-500">Loading roles...</p>
+            <TableSkeleton columns={3} rows={6} />
           ) : (
             <>
               <div className="mt-4 overflow-x-auto">
