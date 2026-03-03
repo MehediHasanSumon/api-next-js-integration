@@ -4,8 +4,8 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { AxiosError } from "axios";
 import api from "@/lib/axios";
 import ProtectedShell from "@/components/ProtectedShell";
-import Input from "@/components/Input";
 import Button from "@/components/Button";
+import FormInput from "@/components/form/FormInput";
 
 interface Permission {
   id: number;
@@ -16,6 +16,7 @@ export default function PermissionManagementPage() {
   const [permissions, setPermissions] = useState<Permission[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [name, setName] = useState("");
   const [errors, setErrors] = useState<Record<string, string[]>>({});
@@ -36,10 +37,23 @@ export default function PermissionManagementPage() {
     loadData();
   }, []);
 
-  const resetForm = () => {
+  const resetForm = (closeForm = false) => {
     setEditingId(null);
     setName("");
     setErrors({});
+
+    if (closeForm) {
+      setShowForm(false);
+    }
+  };
+
+  const toggleForm = () => {
+    if (showForm) {
+      resetForm(true);
+      return;
+    }
+
+    setShowForm(true);
   };
 
   const handleSubmit = async (event: FormEvent) => {
@@ -54,7 +68,7 @@ export default function PermissionManagementPage() {
         await api.post("/admin/permissions", { name });
       }
 
-      resetForm();
+      resetForm(true);
       await loadData();
     } catch (error) {
       const axiosError = error as AxiosError<{ errors?: Record<string, string[]>; message?: string }>;
@@ -69,6 +83,7 @@ export default function PermissionManagementPage() {
   };
 
   const handleEdit = (permission: Permission) => {
+    setShowForm(true);
     setEditingId(permission.id);
     setName(permission.name);
     setErrors({});
@@ -89,38 +104,61 @@ export default function PermissionManagementPage() {
   };
 
   return (
-    <ProtectedShell title="Permission Managements" description="Create and manage permissions for both web and mobile roles.">
-      <div className="grid gap-6 xl:grid-cols-[380px_1fr]">
+    <ProtectedShell title="Permission Management" description="Create, Update, Delete permissions">
+      <div className="space-y-6">
         <section className="rounded-2xl border border-white/60 bg-white/80 p-5 shadow-soft">
-          <h2 className="text-sm font-semibold text-slate-900">{isEditMode ? "Update Permission" : "Create Permission"}</h2>
-          <form onSubmit={handleSubmit} className="mt-4 space-y-3">
-            <Input
-              label="Permission Name"
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              placeholder="example: users.view"
-              error={errors.name?.[0]}
-            />
-            {errors.general && <p className="text-xs text-amber-600">{errors.general[0]}</p>}
-            <div className="flex gap-2">
-              <Button type="submit" disabled={submitting} loading={submitting} className="w-full">
-                {isEditMode ? "Update Permission" : "Create Permission"}
-              </Button>
-              {isEditMode && (
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">Permission Management</h2>
+              <p className="text-sm text-slate-500">Create, Update, Delete permissions</p>
+            </div>
+            <button
+              type="button"
+              onClick={toggleForm}
+              className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800"
+            >
+              {showForm ? "Close" : "Create Permission"}
+            </button>
+          </div>
+        </section>
+
+        <div
+          aria-hidden={!showForm}
+          className={`overflow-hidden transition-all duration-300 ease-in-out ${showForm ? "max-h-[520px] opacity-100 translate-y-0" : "max-h-0 opacity-0 -translate-y-2 pointer-events-none"}`}
+        >
+          <section className="rounded-2xl border border-white/60 bg-white/80 p-5 shadow-soft">
+            <h3 className="text-sm font-semibold text-slate-900">{isEditMode ? "Update Permission Form" : "Add Permission Form"}</h3>
+            <form onSubmit={handleSubmit} className="mt-4 grid gap-4 md:grid-cols-2">
+              <FormInput
+                id="permission-name"
+                label="Permission Name"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder="example: users.view"
+                error={errors.name?.[0]}
+                containerClassName="md:col-span-2"
+              />
+
+              {errors.general && <p className="text-xs text-amber-600 md:col-span-2">{errors.general[0]}</p>}
+
+              <div className="flex gap-2 md:col-span-2">
+                <Button type="submit" disabled={submitting} loading={submitting} className="w-full sm:w-auto">
+                  {isEditMode ? "Update Permission" : "Create Permission"}
+                </Button>
                 <button
                   type="button"
-                  onClick={resetForm}
+                  onClick={() => resetForm(true)}
                   className="rounded-xl border border-slate-200 px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
                 >
                   Cancel
                 </button>
-              )}
-            </div>
-          </form>
-        </section>
+              </div>
+            </form>
+          </section>
+        </div>
 
         <section className="rounded-2xl border border-white/60 bg-white/80 p-5 shadow-soft">
-          <h2 className="text-sm font-semibold text-slate-900">Permissions List</h2>
+          <h2 className="text-sm font-semibold text-slate-900">Permissions Table</h2>
           {loading ? (
             <p className="mt-4 text-sm text-slate-500">Loading permissions...</p>
           ) : (

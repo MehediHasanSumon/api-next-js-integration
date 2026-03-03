@@ -4,8 +4,10 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { AxiosError } from "axios";
 import api from "@/lib/axios";
 import ProtectedShell from "@/components/ProtectedShell";
-import Input from "@/components/Input";
 import Button from "@/components/Button";
+import FormInput from "@/components/form/FormInput";
+import FormLabel from "@/components/form/FormLabel";
+import FormOptionCheckbox from "@/components/form/FormOptionCheckbox";
 
 interface Permission {
   id: number;
@@ -23,6 +25,7 @@ export default function RolesManagementPage() {
   const [permissions, setPermissions] = useState<Permission[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [errors, setErrors] = useState<Record<string, string[]>>({});
 
@@ -46,11 +49,24 @@ export default function RolesManagementPage() {
     loadData();
   }, []);
 
-  const resetForm = () => {
+  const resetForm = (closeForm = false) => {
     setEditingId(null);
     setName("");
     setSelectedPermissions([]);
     setErrors({});
+
+    if (closeForm) {
+      setShowForm(false);
+    }
+  };
+
+  const toggleForm = () => {
+    if (showForm) {
+      resetForm(true);
+      return;
+    }
+
+    setShowForm(true);
   };
 
   const togglePermission = (permissionName: string) => {
@@ -76,7 +92,7 @@ export default function RolesManagementPage() {
         await api.post("/admin/roles", payload);
       }
 
-      resetForm();
+      resetForm(true);
       await loadData();
     } catch (error) {
       const axiosError = error as AxiosError<{ errors?: Record<string, string[]>; message?: string }>;
@@ -91,6 +107,7 @@ export default function RolesManagementPage() {
   };
 
   const handleEdit = (role: Role) => {
+    setShowForm(true);
     setEditingId(role.id);
     setName(role.name);
     setSelectedPermissions(role.permissions.map((permission) => permission.name));
@@ -112,51 +129,78 @@ export default function RolesManagementPage() {
   };
 
   return (
-    <ProtectedShell title="Roles Managements" description="Manage role definitions and map permissions.">
-      <div className="grid gap-6 xl:grid-cols-[380px_1fr]">
+    <ProtectedShell title="Roles Management" description="Create, Update, Delete roles">
+      <div className="space-y-6">
         <section className="rounded-2xl border border-white/60 bg-white/80 p-5 shadow-soft">
-          <h2 className="text-sm font-semibold text-slate-900">{isEditMode ? "Update Role" : "Create Role"}</h2>
-          <form onSubmit={handleSubmit} className="mt-4 space-y-3">
-            <Input label="Role Name" value={name} onChange={(event) => setName(event.target.value)} error={errors.name?.[0]} />
-
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <p className="mb-2 text-sm font-medium text-slate-700">Attach Permissions</p>
-              <div className="max-h-56 space-y-2 overflow-y-auto rounded-xl border border-slate-200 bg-white p-3">
-                {permissions.length === 0 && <p className="text-xs text-slate-500">No permissions found</p>}
-                {permissions.map((permission) => (
-                  <label key={permission.id} className="flex items-center gap-2 text-sm text-slate-700">
-                    <input
-                      type="checkbox"
+              <h2 className="text-lg font-semibold text-slate-900">Roles Management</h2>
+              <p className="text-sm text-slate-500">Create, Update, Delete roles</p>
+            </div>
+            <button
+              type="button"
+              onClick={toggleForm}
+              className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800"
+            >
+              {showForm ? "Close" : "Create Role"}
+            </button>
+          </div>
+        </section>
+
+        <div
+          aria-hidden={!showForm}
+          className={`overflow-hidden transition-all duration-300 ease-in-out ${showForm ? "max-h-[1200px] opacity-100 translate-y-0" : "max-h-0 opacity-0 -translate-y-2 pointer-events-none"}`}
+        >
+          <section className="rounded-2xl border border-white/60 bg-white/80 p-5 shadow-soft">
+            <h3 className="text-sm font-semibold text-slate-900">{isEditMode ? "Update Role Form" : "Add Role Form"}</h3>
+
+            <form onSubmit={handleSubmit} className="mt-4 grid gap-4 md:grid-cols-2">
+              <FormInput
+                id="role-name"
+                label="Role Name"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder="example: manager"
+                error={errors.name?.[0]}
+                containerClassName="md:col-span-2"
+              />
+
+              <div className="md:col-span-2">
+                <FormLabel text="Permissions" />
+                <div className="mt-1.5 grid max-h-64 gap-2 overflow-y-auto rounded-xl border border-slate-300 bg-white px-3.5 py-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {permissions.length === 0 && <p className="text-xs text-slate-500">No permissions found</p>}
+                  {permissions.map((permission) => (
+                    <FormOptionCheckbox
+                      key={permission.id}
+                      label={permission.name}
                       checked={selectedPermissions.includes(permission.name)}
                       onChange={() => togglePermission(permission.name)}
                     />
-                    {permission.name}
-                  </label>
-                ))}
+                  ))}
+                </div>
+                {errors.permissions?.[0] && <p className="mt-1 text-xs text-rose-600">{errors.permissions[0]}</p>}
               </div>
-            </div>
 
-            {errors.general && <p className="text-xs text-amber-600">{errors.general[0]}</p>}
+              {errors.general && <p className="text-xs text-amber-600 md:col-span-2">{errors.general[0]}</p>}
 
-            <div className="flex gap-2">
-              <Button type="submit" disabled={submitting} loading={submitting} className="w-full">
-                {isEditMode ? "Update Role" : "Create Role"}
-              </Button>
-              {isEditMode && (
+              <div className="flex gap-2 md:col-span-2">
+                <Button type="submit" disabled={submitting} loading={submitting} className="w-full sm:w-auto">
+                  {isEditMode ? "Update Role" : "Create Role"}
+                </Button>
                 <button
                   type="button"
-                  onClick={resetForm}
+                  onClick={() => resetForm(true)}
                   className="rounded-xl border border-slate-200 px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
                 >
                   Cancel
                 </button>
-              )}
-            </div>
-          </form>
-        </section>
+              </div>
+            </form>
+          </section>
+        </div>
 
         <section className="rounded-2xl border border-white/60 bg-white/80 p-5 shadow-soft">
-          <h2 className="text-sm font-semibold text-slate-900">Roles List</h2>
+          <h2 className="text-sm font-semibold text-slate-900">Roles Table</h2>
           {loading ? (
             <p className="mt-4 text-sm text-slate-500">Loading roles...</p>
           ) : (

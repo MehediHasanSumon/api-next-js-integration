@@ -76,27 +76,34 @@ test('authenticated user can crud users with role assignment', function () {
     $this->actingAs($authUser);
 
     Role::create(['name' => 'admin', 'guard_name' => 'web']);
+    Role::create(['name' => 'manager', 'guard_name' => 'web']);
 
     $createResponse = $this->postJson('/api/admin/users', [
         'name' => 'Managed User',
         'email' => 'managed@example.com',
         'password' => 'password123',
-        'roles' => ['admin'],
+        'password_confirmation' => 'password123',
+        'email_verified' => true,
+        'roles' => ['admin', 'manager'],
     ]);
 
     $createResponse->assertCreated()->assertJsonPath('email', 'managed@example.com');
 
     $user = User::query()->where('email', 'managed@example.com')->firstOrFail();
     expect($user->hasRole('admin'))->toBeTrue();
+    expect($user->hasRole('manager'))->toBeTrue();
+    expect($user->email_verified_at)->not->toBeNull();
 
     $this->putJson("/api/admin/users/{$user->id}", [
         'name' => 'Updated User',
         'email' => 'managed@example.com',
+        'email_verified' => false,
         'roles' => [],
     ])->assertOk()->assertJsonPath('name', 'Updated User');
 
     $user->refresh();
     expect($user->roles()->count())->toBe(0);
+    expect($user->email_verified_at)->toBeNull();
 
     $this->deleteJson("/api/admin/users/{$user->id}")
         ->assertOk()

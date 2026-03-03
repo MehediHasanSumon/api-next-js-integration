@@ -4,8 +4,11 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { AxiosError } from "axios";
 import api from "@/lib/axios";
 import ProtectedShell from "@/components/ProtectedShell";
-import Input from "@/components/Input";
 import Button from "@/components/Button";
+import FormCheckbox from "@/components/form/FormCheckbox";
+import FormInput from "@/components/form/FormInput";
+import FormLabel from "@/components/form/FormLabel";
+import FormOptionCheckbox from "@/components/form/FormOptionCheckbox";
 
 interface Role {
   id: number;
@@ -16,6 +19,7 @@ interface User {
   id: number;
   name: string;
   email: string;
+  email_verified_at: string | null;
   roles: Role[];
 }
 
@@ -24,12 +28,15 @@ export default function UsersManagementPage() {
   const [roles, setRoles] = useState<Role[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [errors, setErrors] = useState<Record<string, string[]>>({});
 
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [passwordConfirmation, setPasswordConfirmation] = useState("");
+  const [emailVerified, setEmailVerified] = useState(false);
   const [selectedRoles, setSelectedRoles] = useState<string[]>([]);
 
   const isEditMode = useMemo(() => editingId !== null, [editingId]);
@@ -49,28 +56,72 @@ export default function UsersManagementPage() {
     loadData();
   }, []);
 
-  const resetForm = () => {
+  const resetForm = (closeForm = false) => {
     setEditingId(null);
     setName("");
     setEmail("");
     setPassword("");
+    setPasswordConfirmation("");
+    setEmailVerified(false);
     setSelectedRoles([]);
     setErrors({});
+
+    if (closeForm) {
+      setShowForm(false);
+    }
+  };
+
+  const toggleForm = () => {
+    if (showForm) {
+      resetForm(true);
+      return;
+    }
+
+    setShowForm(true);
+  };
+
+  const toggleRole = (roleName: string) => {
+    setSelectedRoles((prev) => (prev.includes(roleName) ? prev.filter((item) => item !== roleName) : [...prev, roleName]));
   };
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
     setErrors({});
+
+    const clientErrors: Record<string, string[]> = {};
+
+    if (!isEditMode && password.trim() === "") {
+      clientErrors.password = ["Password is required"];
+    }
+
+    if (password.trim() !== "" && password !== passwordConfirmation) {
+      clientErrors.password_confirmation = ["Password confirmation does not match"];
+    }
+
+    if (Object.keys(clientErrors).length > 0) {
+      setErrors(clientErrors);
+      return;
+    }
+
     setSubmitting(true);
 
-    const payload: { name: string; email: string; password?: string; roles: string[] } = {
+    const payload: {
+      name: string;
+      email: string;
+      email_verified: boolean;
+      roles: string[];
+      password?: string;
+      password_confirmation?: string;
+    } = {
       name,
       email,
+      email_verified: emailVerified,
       roles: selectedRoles,
     };
 
     if (password.trim() !== "") {
       payload.password = password;
+      payload.password_confirmation = passwordConfirmation;
     }
 
     try {
@@ -80,7 +131,7 @@ export default function UsersManagementPage() {
         await api.post("/admin/users", payload);
       }
 
-      resetForm();
+      resetForm(true);
       await loadData();
     } catch (error) {
       const axiosError = error as AxiosError<{ errors?: Record<string, string[]>; message?: string }>;
@@ -95,10 +146,13 @@ export default function UsersManagementPage() {
   };
 
   const handleEdit = (user: User) => {
+    setShowForm(true);
     setEditingId(user.id);
     setName(user.name);
     setEmail(user.email);
     setPassword("");
+    setPasswordConfirmation("");
+    setEmailVerified(Boolean(user.email_verified_at));
     setSelectedRoles(user.roles.map((role) => role.name));
     setErrors({});
   };
@@ -117,64 +171,119 @@ export default function UsersManagementPage() {
     }
   };
 
-  const toggleRole = (roleName: string) => {
-    setSelectedRoles((prev) => (prev.includes(roleName) ? prev.filter((item) => item !== roleName) : [...prev, roleName]));
-  };
-
   return (
-    <ProtectedShell title="Users Managements" description="Create, update, and remove users with role assignment.">
-      <div className="grid gap-6 xl:grid-cols-[380px_1fr]">
+    <ProtectedShell title="User Management" description="Create, Update, Delete users">
+      <div className="space-y-6">
         <section className="rounded-2xl border border-white/60 bg-white/80 p-5 shadow-soft">
-          <h2 className="text-sm font-semibold text-slate-900">{isEditMode ? "Update User" : "Create User"}</h2>
-          <form onSubmit={handleSubmit} className="mt-4 space-y-3">
-            <Input label="Name" value={name} onChange={(event) => setName(event.target.value)} error={errors.name?.[0]} />
-            <Input label="Email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} error={errors.email?.[0]} />
-            <Input
-              label={isEditMode ? "Password (optional)" : "Password"}
-              type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              error={errors.password?.[0]}
-            />
-
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <p className="mb-2 text-sm font-medium text-slate-700">Assign Roles</p>
-              <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-3">
-                {roles.length === 0 && <p className="text-xs text-slate-500">No roles found</p>}
-                {roles.map((role) => (
-                  <label key={role.id} className="flex items-center gap-2 text-sm text-slate-700">
-                    <input
-                      type="checkbox"
+              <h2 className="text-lg font-semibold text-slate-900">User Management</h2>
+              <p className="text-sm text-slate-500">Create, Update, Delete users</p>
+            </div>
+            <button
+              type="button"
+              onClick={toggleForm}
+              className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800"
+            >
+              {showForm ? "Close" : "Create User"}
+            </button>
+          </div>
+        </section>
+
+        <div
+          aria-hidden={!showForm}
+          className={`overflow-hidden transition-all duration-300 ease-in-out ${showForm ? "max-h-[1400px] opacity-100 translate-y-0" : "max-h-0 opacity-0 -translate-y-2 pointer-events-none"}`}
+        >
+          <section className="rounded-2xl border border-white/60 bg-white/80 p-5 shadow-soft">
+            <h3 className="text-sm font-semibold text-slate-900">{isEditMode ? "Update User Form" : "Add User Form"}</h3>
+
+            <form onSubmit={handleSubmit} className="mt-4 grid gap-4 md:grid-cols-2">
+              <FormInput
+                id="user-name"
+                label="Name"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder="Enter full name"
+                error={errors.name?.[0]}
+              />
+
+              <FormInput
+                id="user-email"
+                label="Email"
+                type="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                placeholder="name@example.com"
+                error={errors.email?.[0]}
+              />
+
+              <FormInput
+                id="user-password"
+                label="Password"
+                type="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                placeholder={isEditMode ? "Leave blank to keep current" : "At least 8 characters"}
+                error={errors.password?.[0]}
+              />
+
+              <FormInput
+                id="user-password-confirmation"
+                label="Confirmation Password"
+                type="password"
+                value={passwordConfirmation}
+                onChange={(event) => setPasswordConfirmation(event.target.value)}
+                placeholder="Re-enter password"
+                error={errors.password_confirmation?.[0]}
+              />
+
+              <div className="md:col-span-2">
+                <FormCheckbox
+                  name="email_verified"
+                  label="Email Verified At"
+                  checked={emailVerified}
+                  onChange={(event) => setEmailVerified(event.target.checked)}
+                  description="Enable this to mark the user email as verified."
+                  error={errors.email_verified?.[0] || errors.email_verified_at?.[0]}
+                />
+              </div>
+
+              <div className="md:col-span-2">
+                <FormLabel text="Role" />
+                <div className="mt-1.5 grid gap-2 rounded-xl border border-slate-300 bg-white px-3.5 py-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {roles.length === 0 && <p className="text-xs text-slate-500">No roles found</p>}
+                  {roles.map((role) => (
+                    <FormOptionCheckbox
+                      key={role.id}
+                      label={role.name}
                       checked={selectedRoles.includes(role.name)}
                       onChange={() => toggleRole(role.name)}
                     />
-                    {role.name}
-                  </label>
-                ))}
+                  ))}
+                </div>
+                {errors.roles?.[0] && <p className="mt-1 text-xs text-rose-600">{errors.roles[0]}</p>}
               </div>
-            </div>
 
-            {errors.general && <p className="text-xs text-amber-600">{errors.general[0]}</p>}
+              {errors.general && <p className="text-xs text-amber-600 md:col-span-2">{errors.general[0]}</p>}
 
-            <div className="flex gap-2">
-              <Button type="submit" disabled={submitting} loading={submitting} className="w-full">
-                {isEditMode ? "Update User" : "Create User"}
-              </Button>
-              {isEditMode && (
+              <div className="flex gap-2 md:col-span-2">
+                <Button type="submit" disabled={submitting} loading={submitting} className="w-full sm:w-auto">
+                  {isEditMode ? "Update User" : "Create User"}
+                </Button>
                 <button
                   type="button"
-                  onClick={resetForm}
+                  onClick={() => resetForm(true)}
                   className="rounded-xl border border-slate-200 px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
                 >
                   Cancel
                 </button>
-              )}
-            </div>
-          </form>
-        </section>
+              </div>
+            </form>
+          </section>
+        </div>
 
         <section className="rounded-2xl border border-white/60 bg-white/80 p-5 shadow-soft">
-          <h2 className="text-sm font-semibold text-slate-900">Users List</h2>
+          <h2 className="text-sm font-semibold text-slate-900">Users Table</h2>
           {loading ? (
             <p className="mt-4 text-sm text-slate-500">Loading users...</p>
           ) : (
@@ -184,7 +293,8 @@ export default function UsersManagementPage() {
                   <tr className="border-b border-slate-200 text-slate-500">
                     <th className="px-2 py-2 font-medium">Name</th>
                     <th className="px-2 py-2 font-medium">Email</th>
-                    <th className="px-2 py-2 font-medium">Roles</th>
+                    <th className="px-2 py-2 font-medium">Email Verified</th>
+                    <th className="px-2 py-2 font-medium">Role</th>
                     <th className="px-2 py-2 font-medium">Actions</th>
                   </tr>
                 </thead>
@@ -193,6 +303,13 @@ export default function UsersManagementPage() {
                     <tr key={user.id} className="border-b border-slate-100 text-slate-700">
                       <td className="px-2 py-2">{user.name}</td>
                       <td className="px-2 py-2">{user.email}</td>
+                      <td className="px-2 py-2 text-xs">
+                        {user.email_verified_at ? (
+                          <span className="rounded-full bg-emerald-100 px-2 py-0.5 font-medium text-emerald-700">Verified</span>
+                        ) : (
+                          <span className="rounded-full bg-amber-100 px-2 py-0.5 font-medium text-amber-700">Not verified</span>
+                        )}
+                      </td>
                       <td className="px-2 py-2">
                         <div className="flex flex-wrap gap-1">
                           {user.roles.length === 0 && <span className="text-xs text-slate-400">No role</span>}
