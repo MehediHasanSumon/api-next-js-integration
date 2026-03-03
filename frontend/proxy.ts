@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-const PROTECTED_PREFIXES = ["/dashboard"];
+const PROTECTED_PREFIXES = ["/dashboard", "/users", "/roles", "/permissions"];
 const GUEST_ONLY_PATHS = new Set(["/login", "/register", "/forgot-password", "/reset-password"]);
 const SESSION_COOKIE_HINT = /(^|;\s)[^=]*session[^=]*=/i;
 
@@ -79,5 +79,14 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/dashboard/:path*", "/login", "/register", "/forgot-password", "/reset-password"],
+  matcher: [
+    "/dashboard/:path*",
+    "/users/:path*",
+    "/roles/:path*",
+    "/permissions/:path*",
+    "/login",
+    "/register",
+    "/forgot-password",
+    "/reset-password",
+  ],
 };
