@@ -115,7 +115,7 @@ export default function Register() {
               placeholder="Re-enter your password"
               error={errors.password_confirmation?.[0]}
             />
-            <Button type="submit" disabled={loading} loading={loading}>
+            <Button type="submit" disabled={loading} loading={loading} fullWidth size="lg">
               Create Account
             </Button>
           </form>

@@ -9,12 +9,32 @@ use Spatie\Permission\Models\Permission;
 
 class PermissionManagementController extends Controller
 {
-    public function index(): JsonResponse
+    public function index(Request $request): JsonResponse
     {
-        $permissions = Permission::query()
+        $validated = $request->validate([
+            'search' => 'nullable|string|max:255',
+            'per_page' => 'nullable|integer|min:5|max:100',
+            'paginate' => 'nullable|boolean',
+        ]);
+
+        $permissionsQuery = Permission::query()
             ->select(['id', 'name', 'guard_name', 'created_at'])
-            ->orderBy('name')
-            ->get();
+            ->orderBy('name');
+
+        $search = trim((string) ($validated['search'] ?? ''));
+        if ($search !== '') {
+            $permissionsQuery->where('name', 'like', "%{$search}%");
+        }
+
+        if ($request->boolean('paginate')) {
+            $permissions = $permissionsQuery
+                ->paginate((int) ($validated['per_page'] ?? 10))
+                ->withQueryString();
+
+            return response()->json($permissions);
+        }
+
+        $permissions = $permissionsQuery->get();
 
         return response()->json($permissions);
     }

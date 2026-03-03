@@ -103,7 +103,7 @@ export default function Login() {
                 Forgot password?
               </Link>
             </div>
-            <Button type="submit" disabled={loading} loading={loading}>
+            <Button type="submit" disabled={loading} loading={loading} fullWidth size="lg">
               Sign In
             </Button>
           </form>

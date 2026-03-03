@@ -10,13 +10,45 @@ use Illuminate\Support\Facades\Hash;
 
 class UserManagementController extends Controller
 {
-    public function index(): JsonResponse
+    public function index(Request $request): JsonResponse
     {
-        $users = User::query()
+        $validated = $request->validate([
+            'search' => 'nullable|string|max:255',
+            'role' => 'nullable|string|max:255',
+            'verified' => 'nullable|in:verified,unverified',
+            'per_page' => 'nullable|integer|min:5|max:100',
+        ]);
+
+        $usersQuery = User::query()
             ->with('roles:id,name')
             ->select(['id', 'name', 'email', 'email_verified_at', 'created_at'])
-            ->orderByDesc('id')
-            ->get();
+            ->orderByDesc('id');
+
+        $search = trim((string) ($validated['search'] ?? ''));
+        if ($search !== '') {
+            $usersQuery->where(function ($query) use ($search) {
+                $query->where('name', 'like', "%{$search}%")
+                    ->orWhere('email', 'like', "%{$search}%");
+            });
+        }
+
+        $role = trim((string) ($validated['role'] ?? ''));
+        if ($role !== '') {
+            $usersQuery->whereHas('roles', function ($query) use ($role) {
+                $query->where('name', $role);
+            });
+        }
+
+        $verified = $validated['verified'] ?? null;
+        if ($verified === 'verified') {
+            $usersQuery->whereNotNull('email_verified_at');
+        } elseif ($verified === 'unverified') {
+            $usersQuery->whereNull('email_verified_at');
+        }
+
+        $users = $usersQuery
+            ->paginate((int) ($validated['per_page'] ?? 10))
+            ->withQueryString();
 
         return response()->json($users);
     }

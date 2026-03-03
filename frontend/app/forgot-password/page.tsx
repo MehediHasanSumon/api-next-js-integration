@@ -82,7 +82,7 @@ export default function ForgotPasswordPage() {
             {errors.general && <p className="text-xs text-amber-600 dark:text-amber-400">{errors.general[0]}</p>}
             {successMessage && <p className="text-xs text-emerald-600 dark:text-emerald-400">{successMessage}</p>}
 
-            <Button type="submit" loading={loading} disabled={loading}>
+            <Button type="submit" loading={loading} disabled={loading} fullWidth size="lg">
               Send Reset Link
             </Button>
           </form>

@@ -9,13 +9,41 @@ use Spatie\Permission\Models\Role;
 
 class RoleManagementController extends Controller
 {
-    public function index(): JsonResponse
+    public function index(Request $request): JsonResponse
     {
-        $roles = Role::query()
+        $validated = $request->validate([
+            'search' => 'nullable|string|max:255',
+            'permission' => 'nullable|string|max:255',
+            'per_page' => 'nullable|integer|min:5|max:100',
+            'paginate' => 'nullable|boolean',
+        ]);
+
+        $rolesQuery = Role::query()
             ->with(['permissions:id,name'])
             ->select(['id', 'name', 'guard_name', 'created_at'])
-            ->orderBy('name')
-            ->get();
+            ->orderBy('name');
+
+        $search = trim((string) ($validated['search'] ?? ''));
+        if ($search !== '') {
+            $rolesQuery->where('name', 'like', "%{$search}%");
+        }
+
+        $permission = trim((string) ($validated['permission'] ?? ''));
+        if ($permission !== '') {
+            $rolesQuery->whereHas('permissions', function ($query) use ($permission) {
+                $query->where('name', $permission);
+            });
+        }
+
+        if ($request->boolean('paginate')) {
+            $roles = $rolesQuery
+                ->paginate((int) ($validated['per_page'] ?? 10))
+                ->withQueryString();
+
+            return response()->json($roles);
+        }
+
+        $roles = $rolesQuery->get();
 
         return response()->json($roles);
     }

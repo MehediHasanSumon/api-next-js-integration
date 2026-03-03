@@ -121,7 +121,7 @@ export default function ResetPasswordPage() {
               </p>
             )}
 
-            <Button type="submit" loading={loading} disabled={loading || !hasRequiredResetParams}>
+            <Button type="submit" loading={loading} disabled={loading || !hasRequiredResetParams} fullWidth size="lg">
               Reset Password
             </Button>
           </form>

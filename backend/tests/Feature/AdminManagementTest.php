@@ -40,6 +40,80 @@ test('authenticated user can crud permissions', function () {
         ->assertJsonPath('message', 'Permission deleted successfully');
 });
 
+test('authenticated user can filter and paginate users', function () {
+    $authUser = User::factory()->create();
+    $this->actingAs($authUser);
+
+    Role::create(['name' => 'admin', 'guard_name' => 'web']);
+    Role::create(['name' => 'manager', 'guard_name' => 'web']);
+
+    $verifiedAdmin = User::factory()->create([
+        'name' => 'Alice Verified',
+        'email' => 'alice@example.com',
+        'email_verified_at' => now(),
+    ]);
+    $verifiedAdmin->assignRole('admin');
+
+    $unverifiedManager = User::factory()->create([
+        'name' => 'Bob Pending',
+        'email' => 'bob@example.com',
+        'email_verified_at' => null,
+    ]);
+    $unverifiedManager->assignRole('manager');
+
+    $response = $this->getJson('/api/admin/users?search=alice&role=admin&verified=verified&per_page=5&page=1');
+
+    $response->assertOk()
+        ->assertJsonPath('current_page', 1)
+        ->assertJsonPath('last_page', 1)
+        ->assertJsonPath('per_page', 5)
+        ->assertJsonPath('total', 1)
+        ->assertJsonCount(1, 'data')
+        ->assertJsonPath('data.0.email', 'alice@example.com');
+});
+
+test('authenticated user can filter and paginate roles', function () {
+    $authUser = User::factory()->create();
+    $this->actingAs($authUser);
+
+    Permission::create(['name' => 'users.view', 'guard_name' => 'web']);
+    Permission::create(['name' => 'users.update', 'guard_name' => 'web']);
+
+    $adminRole = Role::create(['name' => 'admin', 'guard_name' => 'web']);
+    $adminRole->syncPermissions(['users.view']);
+
+    $managerRole = Role::create(['name' => 'manager', 'guard_name' => 'web']);
+    $managerRole->syncPermissions(['users.update']);
+
+    $response = $this->getJson('/api/admin/roles?search=admin&permission=users.view&paginate=1&per_page=5&page=1');
+
+    $response->assertOk()
+        ->assertJsonPath('current_page', 1)
+        ->assertJsonPath('last_page', 1)
+        ->assertJsonPath('per_page', 5)
+        ->assertJsonPath('total', 1)
+        ->assertJsonCount(1, 'data')
+        ->assertJsonPath('data.0.name', 'admin');
+});
+
+test('authenticated user can filter and paginate permissions', function () {
+    $authUser = User::factory()->create();
+    $this->actingAs($authUser);
+
+    Permission::create(['name' => 'users.view', 'guard_name' => 'web']);
+    Permission::create(['name' => 'users.update', 'guard_name' => 'web']);
+
+    $response = $this->getJson('/api/admin/permissions?search=view&paginate=1&per_page=5&page=1');
+
+    $response->assertOk()
+        ->assertJsonPath('current_page', 1)
+        ->assertJsonPath('last_page', 1)
+        ->assertJsonPath('per_page', 5)
+        ->assertJsonPath('total', 1)
+        ->assertJsonCount(1, 'data')
+        ->assertJsonPath('data.0.name', 'users.view');
+});
+
 test('authenticated user can crud roles with permission sync', function () {
     $authUser = User::factory()->create();
     $this->actingAs($authUser);

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useMemo, useState } from "react";
+import Button from "@/components/Button";
 
 const managementLinks = [
   { href: "/users", label: "Users Managements" },
@@ -74,11 +75,13 @@ export default function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose:
           </Link>
 
           <div className="mt-2 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm transition-all duration-200 hover:border-slate-300">
-            <button
+            <Button
               type="button"
               onClick={() => setDropdowns((prev) => ({ ...prev, userManagements: !prev.userManagements }))}
-              className={`flex w-full cursor-pointer items-center justify-between px-3.5 py-3 text-left text-sm font-medium text-slate-700 transition-all duration-200 hover:bg-slate-50 ${isUserManagementsOpen ? "bg-slate-50" : ""
-                }`}
+              variant="ghost"
+              size="md"
+              fullWidth
+              className={`justify-between px-3.5 py-3 text-left text-sm font-medium text-slate-700 ${isUserManagementsOpen ? "bg-slate-50" : ""}`}
             >
               <span className="flex items-center gap-3">
                 <span className="inline-block h-2 w-2 rounded-sm bg-slate-400" aria-hidden="true"></span>
@@ -92,7 +95,7 @@ export default function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose:
               >
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
               </svg>
-            </button>
+            </Button>
 
             <div
               className={`grid overflow-hidden transition-all duration-300 ease-out ${isUserManagementsOpen ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"}`}
