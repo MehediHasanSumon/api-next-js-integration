@@ -1,6 +1,5 @@
 <?php
 
-use Laravel\Sanctum\Sanctum;
 
 return [
 
@@ -15,7 +14,15 @@ return [
     |
     */
 
-    'stateful' => explode(',', env('SANCTUM_STATEFUL_DOMAINS')),
+    'stateful' => array_values(array_filter(array_map(
+        static function (string $domain): string {
+            $domain = trim($domain);
+            $domain = str_replace(['https://', 'http://'], '', $domain);
+
+            return rtrim($domain, '/');
+        },
+        explode(',', env('SANCTUM_STATEFUL_DOMAINS', 'localhost,localhost:3000,127.0.0.1,127.0.0.1:3000,::1'))
+    ))),
 
     /*
     |--------------------------------------------------------------------------
