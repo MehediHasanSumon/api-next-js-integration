@@ -1,9 +1,13 @@
 <?php
 
 use App\Models\User;
+use Illuminate\Auth\Notifications\ResetPassword as ResetPasswordNotification;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Password;
 
 uses(RefreshDatabase::class);
 
@@ -64,6 +68,59 @@ test('register endpoint creates user with csrf token', function () {
     ]);
 });
 
+test('forgot password endpoint sends reset link', function () {
+    Notification::fake();
+
+    $user = User::factory()->create([
+        'email' => 'forgot@example.com',
+    ]);
+
+    $csrf = csrfTokenPayload();
+
+    $response = $this
+        ->withHeaders(array_merge(statefulHeaders('/forgot-password'), $csrf['headers']))
+        ->withSession($csrf['session'])
+        ->withCookie('XSRF-TOKEN', $csrf['token'])
+        ->postJson('/api/forgot-password', [
+            'email' => 'forgot@example.com',
+        ]);
+
+    $response
+        ->assertOk()
+        ->assertJsonPath('message', 'If your email exists, a reset link has been sent.');
+
+    Notification::assertSentTo(
+        $user,
+        ResetPasswordNotification::class,
+        function (ResetPasswordNotification $notification) use ($user): bool {
+            $url = $notification->toMail($user)->actionUrl;
+
+            return str_contains($url, '/reset-password?token=')
+                && str_contains($url, 'email=forgot%40example.com');
+        }
+    );
+});
+
+test('forgot password endpoint returns generic success for unknown email', function () {
+    Notification::fake();
+
+    $csrf = csrfTokenPayload();
+
+    $response = $this
+        ->withHeaders(array_merge(statefulHeaders('/forgot-password'), $csrf['headers']))
+        ->withSession($csrf['session'])
+        ->withCookie('XSRF-TOKEN', $csrf['token'])
+        ->postJson('/api/forgot-password', [
+            'email' => 'missing@example.com',
+        ]);
+
+    $response
+        ->assertOk()
+        ->assertJsonPath('message', 'If your email exists, a reset link has been sent.');
+
+    Notification::assertNothingSent();
+});
+
 test('login succeeds and rotates session id', function () {
     User::factory()->create([
         'name' => 'John Auth',
@@ -115,6 +172,54 @@ test('login with remember me sets recaller cookie', function () {
     $cookieNames = collect($response->headers->getCookies())->map(fn ($cookie) => $cookie->getName());
 
     expect($cookieNames)->toContain($recallerCookieName);
+});
+
+test('reset password endpoint updates password with valid token', function () {
+    $user = User::factory()->create([
+        'email' => 'reset@example.com',
+        'password' => 'old-password',
+    ]);
+
+    $token = Password::broker()->createToken($user);
+    $csrf = csrfTokenPayload();
+
+    $response = $this
+        ->withHeaders(array_merge(statefulHeaders('/reset-password'), $csrf['headers']))
+        ->withSession($csrf['session'])
+        ->withCookie('XSRF-TOKEN', $csrf['token'])
+        ->postJson('/api/reset-password', [
+            'token' => $token,
+            'email' => 'reset@example.com',
+            'password' => 'new-password-123',
+            'password_confirmation' => 'new-password-123',
+        ]);
+
+    $response->assertOk();
+    expect(Hash::check('new-password-123', $user->fresh()->password))->toBeTrue();
+});
+
+test('reset password endpoint fails with invalid token', function () {
+    User::factory()->create([
+        'email' => 'reset-invalid@example.com',
+        'password' => 'old-password',
+    ]);
+
+    $csrf = csrfTokenPayload();
+
+    $response = $this
+        ->withHeaders(array_merge(statefulHeaders('/reset-password'), $csrf['headers']))
+        ->withSession($csrf['session'])
+        ->withCookie('XSRF-TOKEN', $csrf['token'])
+        ->postJson('/api/reset-password', [
+            'token' => 'invalid-token',
+            'email' => 'reset-invalid@example.com',
+            'password' => 'new-password-123',
+            'password_confirmation' => 'new-password-123',
+        ]);
+
+    $response
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('email');
 });
 
 test('logout invalidates authenticated session', function () {

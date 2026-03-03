@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 const PROTECTED_PREFIXES = ["/dashboard"];
-const GUEST_ONLY_PATHS = new Set(["/login", "/register"]);
+const GUEST_ONLY_PATHS = new Set(["/login", "/register", "/forgot-password", "/reset-password"]);
 
 const getUserEndpoint = (): string | null => {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL;
@@ -67,5 +67,5 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/dashboard/:path*", "/login", "/register"],
+  matcher: ["/dashboard/:path*", "/login", "/register", "/forgot-password", "/reset-password"],
 };
