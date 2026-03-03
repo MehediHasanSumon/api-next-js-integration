@@ -8,12 +8,14 @@ import { AxiosError } from "axios";
 import { normalizeEmail } from "@/lib/utils";
 import Input from "@/components/Input";
 import Button from "@/components/Button";
+import Checkbox from "@/components/Checkbox";
 import Head from "@/components/Head";
 
 export default function Login() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [rememberMe, setRememberMe] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState<Record<string, string[]>>({});
 
@@ -39,7 +41,11 @@ export default function Login() {
 
     setLoading(true);
     try {
-      await api.post("/login", { email: normalizeEmail(email), password });
+      await api.post("/login", {
+        email: normalizeEmail(email),
+        password,
+        remember: rememberMe,
+      });
       router.push("/dashboard");
     } catch (error) {
       const axiosError = error as AxiosError<{ errors?: Record<string, string[]>; message?: string }>;
@@ -88,6 +94,11 @@ export default function Login() {
             />
             {errors.general && <p className="text-xs text-amber-600 dark:text-amber-400">{errors.general[0]}</p>}
             <div className="flex items-center justify-between text-sm">
+              <Checkbox
+                label="Remember me"
+                checked={rememberMe}
+                onChange={(e) => setRememberMe(e.target.checked)}
+              />
               <Link href="/forgot-password" className="text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 cursor-pointer">
                 Forgot password?
               </Link>

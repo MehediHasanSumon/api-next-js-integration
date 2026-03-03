@@ -3,6 +3,7 @@
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Auth;
 
 uses(RefreshDatabase::class);
 
@@ -88,6 +89,32 @@ test('login succeeds and rotates session id', function () {
 
     $this->assertAuthenticated();
     expect(session()->getId())->not->toBe($sessionIdBeforeLogin);
+});
+
+test('login with remember me sets recaller cookie', function () {
+    User::factory()->create([
+        'email' => 'remember@example.com',
+        'password' => 'password123',
+    ]);
+
+    $csrf = csrfTokenPayload();
+    $recallerCookieName = Auth::guard('web')->getRecallerName();
+
+    $response = $this
+        ->withHeaders(array_merge(statefulHeaders('/login'), $csrf['headers']))
+        ->withSession($csrf['session'])
+        ->withCookie('XSRF-TOKEN', $csrf['token'])
+        ->postJson('/api/login', [
+            'email' => 'remember@example.com',
+            'password' => 'password123',
+            'remember' => true,
+        ]);
+
+    $response->assertOk();
+
+    $cookieNames = collect($response->headers->getCookies())->map(fn ($cookie) => $cookie->getName());
+
+    expect($cookieNames)->toContain($recallerCookieName);
 });
 
 test('logout invalidates authenticated session', function () {

@@ -39,6 +39,7 @@ class AuthController extends Controller
         $request->validate([
             'email' => 'required|email',
             'password' => 'required',
+            'remember' => 'sometimes|boolean',
         ]);
 
         $user = User::where('email', $request->email)->first();
@@ -49,7 +50,7 @@ class AuthController extends Controller
             ]);
         }
 
-        Auth::login($user);
+        Auth::login($user, $request->boolean('remember'));
         $request->session()->regenerate();
 
         return response()->json([
