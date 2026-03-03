@@ -20,6 +20,7 @@ export default function ResetPasswordPage() {
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState<Record<string, string[]>>({});
   const [successMessage, setSuccessMessage] = useState("");
+  const hasRequiredResetParams = Boolean(email && token);
 
   useEffect(() => {
     const query = new URLSearchParams(window.location.search);
@@ -39,10 +40,8 @@ export default function ResetPasswordPage() {
 
     const newErrors: Record<string, string[]> = {};
 
-    if (!email) newErrors.email = ["Email is required"];
-    else if (!validateEmail(email)) newErrors.email = ["Invalid email format"];
-
-    if (!token) newErrors.token = ["Reset token is required"];
+    if (!email || !validateEmail(email)) newErrors.general = ["Invalid or missing reset link. Request a new one."];
+    if (!token) newErrors.general = ["Invalid or missing reset link. Request a new one."];
     if (!password) newErrors.password = ["Password is required"];
     else if (password.length < 8) newErrors.password = ["Password must be at least 8 characters"];
 
@@ -97,22 +96,6 @@ export default function ResetPasswordPage() {
 
           <form onSubmit={handleSubmit} className="mt-6 space-y-4">
             <Input
-              label="Email"
-              type="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              placeholder="you@example.com"
-              error={errors.email?.[0]}
-            />
-            <Input
-              label="Reset Token"
-              type="text"
-              value={token}
-              onChange={(event) => setToken(event.target.value)}
-              placeholder="Paste token"
-              error={errors.token?.[0]}
-            />
-            <Input
               label="New Password"
               type="password"
               value={password}
@@ -132,7 +115,13 @@ export default function ResetPasswordPage() {
             {errors.general && <p className="text-xs text-amber-600 dark:text-amber-400">{errors.general[0]}</p>}
             {successMessage && <p className="text-xs text-emerald-600 dark:text-emerald-400">{successMessage}</p>}
 
-            <Button type="submit" loading={loading} disabled={loading}>
+            {!hasRequiredResetParams && (
+              <p className="text-xs text-amber-600 dark:text-amber-400">
+                Reset link is invalid or expired. Please request a new reset link.
+              </p>
+            )}
+
+            <Button type="submit" loading={loading} disabled={loading || !hasRequiredResetParams}>
               Reset Password
             </Button>
           </form>
