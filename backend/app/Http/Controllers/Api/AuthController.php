@@ -26,6 +26,7 @@ class AuthController extends Controller
         ]);
 
         Auth::login($user);
+        $request->session()->regenerate();
 
         return response()->json([
             'message' => 'Registration successful',
@@ -49,6 +50,7 @@ class AuthController extends Controller
         }
 
         Auth::login($user);
+        $request->session()->regenerate();
 
         return response()->json([
             'message' => 'Login successful',
@@ -58,7 +60,9 @@ class AuthController extends Controller
 
     public function logout(Request $request)
     {
-        Auth::logout();
+        Auth::guard('web')->logout();
+        $request->session()->invalidate();
+        $request->session()->regenerateToken();
 
         return response()->json([
             'message' => 'Logout successful'

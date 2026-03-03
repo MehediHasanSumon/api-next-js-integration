@@ -8,16 +8,14 @@ import { AxiosError } from "axios";
 import { normalizeEmail } from "@/lib/utils";
 import Input from "@/components/Input";
 import Button from "@/components/Button";
-import Checkbox from "@/components/Checkbox";
 import Head from "@/components/Head";
 
 export default function Login() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [rememberMe, setRememberMe] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [errors, setErrors] = useState<{ email?: string; password?: string; general?: string }>({});
+  const [errors, setErrors] = useState<Record<string, string[]>>({});
 
   const validateEmail = (email: string) => {
     const regex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -29,10 +27,10 @@ export default function Login() {
     setErrors({});
 
     // Frontend validation
-    const newErrors: { email?: string; password?: string } = {};
-    if (!email) newErrors.email = "Email is required";
-    else if (!validateEmail(email)) newErrors.email = "Invalid email format";
-    if (!password) newErrors.password = "Password is required";
+    const newErrors: Record<string, string[]> = {};
+    if (!email) newErrors.email = ["Email is required"];
+    else if (!validateEmail(email)) newErrors.email = ["Invalid email format"];
+    if (!password) newErrors.password = ["Password is required"];
 
     if (Object.keys(newErrors).length > 0) {
       setErrors(newErrors);
@@ -41,14 +39,14 @@ export default function Login() {
 
     setLoading(true);
     try {
-      await api.post('/login', { email: normalizeEmail(email), password });
+      await api.post("/login", { email: normalizeEmail(email), password });
       router.push("/dashboard");
     } catch (error) {
-      const axiosError = error as AxiosError<{ errors?: Record<string, string>; message?: string }>;
+      const axiosError = error as AxiosError<{ errors?: Record<string, string[]>; message?: string }>;
       if (axiosError.response?.data?.errors) {
         setErrors(axiosError.response.data.errors);
       } else {
-        setErrors({ general: axiosError.response?.data?.message || "Login failed" });
+        setErrors({ general: [axiosError.response?.data?.message || "Login failed"] });
       }
     } finally {
       setLoading(false);
@@ -78,7 +76,7 @@ export default function Login() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@example.com"
-              error={errors.email}
+              error={errors.email?.[0]}
             />
             <Input
               label="Password"
@@ -86,15 +84,10 @@ export default function Login() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="Enter your password"
-              error={errors.password}
+              error={errors.password?.[0]}
             />
-            {errors.general && <p className="text-xs text-amber-600 dark:text-amber-400">{errors.general}</p>}
+            {errors.general && <p className="text-xs text-amber-600 dark:text-amber-400">{errors.general[0]}</p>}
             <div className="flex items-center justify-between text-sm">
-              <Checkbox
-                label="Remember me"
-                checked={rememberMe}
-                onChange={(e) => setRememberMe(e.target.checked)}
-              />
               <Link href="/forgot-password" className="text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 cursor-pointer">
                 Forgot password?
               </Link>

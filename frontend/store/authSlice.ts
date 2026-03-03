@@ -40,6 +40,7 @@ const authSlice = createSlice({
         state.loading = false;
       })
       .addCase(fetchUser.rejected, (state) => {
+        state.user = null;
         state.loading = false;
       })
       .addCase(logout.fulfilled, (state) => {
