@@ -3,6 +3,7 @@ import type { NextRequest } from "next/server";
 
 const PROTECTED_PREFIXES = ["/dashboard"];
 const GUEST_ONLY_PATHS = new Set(["/login", "/register", "/forgot-password", "/reset-password"]);
+const SESSION_COOKIE_HINT = /(^|;\s)[^=]*session[^=]*=/i;
 
 const getUserEndpoint = (): string | null => {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL;
@@ -42,6 +43,16 @@ const isAuthenticated = async (request: NextRequest): Promise<boolean> => {
   }
 };
 
+const hasSessionCookie = (request: NextRequest): boolean => {
+  const cookieHeader = request.headers.get("cookie");
+
+  if (!cookieHeader) {
+    return false;
+  }
+
+  return SESSION_COOKIE_HINT.test(cookieHeader);
+};
+
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const isProtectedPath = PROTECTED_PREFIXES.some((prefix) => pathname.startsWith(prefix));
@@ -52,8 +63,9 @@ export async function proxy(request: NextRequest) {
   }
 
   const authenticated = await isAuthenticated(request);
+  const hasSession = hasSessionCookie(request);
 
-  if (isProtectedPath && !authenticated) {
+  if (isProtectedPath && !hasSession) {
     const loginUrl = new URL("/login", request.url);
     loginUrl.searchParams.set("redirect", pathname);
     return NextResponse.redirect(loginUrl);
