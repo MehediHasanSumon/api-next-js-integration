@@ -8,10 +8,11 @@ import Head from "@/components/Head";
 interface ProtectedShellProps {
   title: string;
   description?: string;
+  showPageHeader?: boolean;
   children: React.ReactNode;
 }
 
-export default function ProtectedShell({ title, description, children }: ProtectedShellProps) {
+export default function ProtectedShell({ title, description, showPageHeader = true, children }: ProtectedShellProps) {
   const [sidebarOpen, setSidebarOpen] = useState(() => (typeof window !== "undefined" ? window.innerWidth >= 1024 : false));
 
   return (
@@ -29,10 +30,12 @@ export default function ProtectedShell({ title, description, children }: Protect
 
         <main className={`relative pt-20 transition-[padding] duration-200 ${sidebarOpen ? "lg:pl-72" : "lg:pl-0"}`}>
           <div className="px-4 pb-10 sm:px-6 lg:px-10">
-            <div className="mb-8 flex flex-col gap-2">
-              <h1 className="text-2xl font-semibold text-slate-900">{title}</h1>
-              {description && <p className="text-sm text-slate-500">{description}</p>}
-            </div>
+            {showPageHeader && (
+              <div className="mb-8 flex flex-col gap-2">
+                <h1 className="text-2xl font-semibold text-slate-900">{title}</h1>
+                {description && <p className="text-sm text-slate-500">{description}</p>}
+              </div>
+            )}
             {children}
           </div>
         </main>

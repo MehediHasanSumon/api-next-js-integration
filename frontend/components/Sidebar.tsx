@@ -24,6 +24,7 @@ export default function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose:
   };
 
   const dashboardActive = pathname === "/dashboard";
+  const messagesActive = pathname === "/masseges" || pathname.startsWith("/message/");
 
   return (
     <>
@@ -68,6 +69,24 @@ export default function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose:
               D
             </span>
             <span>Dashboard</span>
+          </Link>
+
+          <Link
+            href="/masseges"
+            className={`mt-2 flex cursor-pointer items-center gap-3 rounded-xl px-3.5 py-3 text-sm font-semibold transition-all duration-200 ${
+              messagesActive ? "bg-gradient-to-r from-slate-900 to-slate-800 text-white shadow-soft ring-1 ring-slate-800/70" : "text-slate-700 hover:bg-white hover:shadow-sm"
+            }`}
+            onClick={closeOnMobile}
+          >
+            <span
+              className={`inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold ${
+                messagesActive ? "bg-white/20 text-white" : "bg-slate-200 text-slate-600"
+              }`}
+              aria-hidden="true"
+            >
+              M
+            </span>
+            <span>Masseges</span>
           </Link>
 
           <div className="mt-2 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm transition-all duration-200 hover:border-slate-300">
