@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import type { AxiosError } from "axios";
 import ProtectedShell from "@/components/ProtectedShell";
@@ -13,6 +13,7 @@ import {
   respondToConversationRequest,
   sendMessage,
   showConversation,
+  updateTyping,
   unarchiveConversation,
 } from "@/lib/chat-api";
 import { formatThreadRelativeTime, type ThreadItem } from "@/lib/chat-threads";
@@ -53,6 +54,9 @@ interface ApiValidationErrorPayload {
   message?: string;
   errors?: Record<string, string[]>;
 }
+
+const TYPING_IDLE_TIMEOUT_MS = 1500;
+const TYPING_TRUE_THROTTLE_MS = 800;
 
 const formatFileSize = (size: number): string => {
   if (size < 1024) {
@@ -228,6 +232,12 @@ export default function MessageThreadPage() {
   const lastMarkedMessageIdRef = useRef<number | null>(null);
   const latestMessagesRef = useRef<Message[]>([]);
   const typingTimeoutsRef = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
+  const localTypingStateRef = useRef(false);
+  const lastSentTypingStateRef = useRef<boolean | null>(null);
+  const lastTrueTypingSentAtRef = useRef(0);
+  const typingTrueThrottleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stopTypingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const typingForbiddenRef = useRef(false);
   const echoReconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const echoReconnectAttemptRef = useRef(0);
 
@@ -240,6 +250,18 @@ export default function MessageThreadPage() {
     markReadInFlightRef.current = false;
     setTypingUserIds([]);
     setLastReadEvent(null);
+    localTypingStateRef.current = false;
+    lastSentTypingStateRef.current = null;
+    lastTrueTypingSentAtRef.current = 0;
+    typingForbiddenRef.current = false;
+    if (typingTrueThrottleTimerRef.current) {
+      clearTimeout(typingTrueThrottleTimerRef.current);
+      typingTrueThrottleTimerRef.current = null;
+    }
+    if (stopTypingTimerRef.current) {
+      clearTimeout(stopTypingTimerRef.current);
+      stopTypingTimerRef.current = null;
+    }
     setRequestActionError(null);
     setRequestActionLoading(null);
     setArchiveActionError(null);
@@ -263,6 +285,13 @@ export default function MessageThreadPage() {
 
   const conversation = conversationData?.conversation ?? null;
   const participant = conversationData?.participant ?? null;
+  const canEmitTyping = participant?.participant_state === "accepted" && participant.archived_at === null;
+
+  useEffect(() => {
+    if (canEmitTyping) {
+      typingForbiddenRef.current = false;
+    }
+  }, [canEmitTyping]);
 
   const counterpart = useMemo(() => {
     if (!conversation?.participants || currentUserId === null) {
@@ -273,17 +302,45 @@ export default function MessageThreadPage() {
     return other?.user ?? null;
   }, [conversation?.participants, currentUserId]);
 
+  const typingUserNames = useMemo(() => {
+    if (!conversation?.participants || typingUserIds.length === 0) {
+      return [];
+    }
+
+    const typingSet = new Set(typingUserIds);
+
+    return conversation.participants
+      .filter((item) => item.user && item.user_id !== currentUserId && typingSet.has(item.user_id))
+      .map((item) => {
+        const name = item.user?.name?.trim();
+        if (name) {
+          return name;
+        }
+
+        const emailHandle = item.user?.email?.split("@")[0];
+        if (emailHandle) {
+          return emailHandle;
+        }
+
+        return "User";
+      });
+  }, [conversation?.participants, currentUserId, typingUserIds]);
+
   const typingIndicatorText = useMemo(() => {
-    if (typingUserIds.length === 0) {
+    if (typingUserNames.length === 0) {
       return null;
     }
 
-    if (counterpart && typingUserIds.includes(counterpart.id)) {
-      return `${counterpart.name} is typing...`;
+    if (typingUserNames.length === 1) {
+      return `${typingUserNames[0]} is typing...`;
     }
 
-    return "Typing...";
-  }, [counterpart, typingUserIds]);
+    if (typingUserNames.length === 2) {
+      return `${typingUserNames[0]} and ${typingUserNames[1]} are typing...`;
+    }
+
+    return `${typingUserNames[0]}, ${typingUserNames[1]} and ${typingUserNames.length - 2} others are typing...`;
+  }, [typingUserNames]);
 
   const unreadCount = useMemo(() => threads.reduce((sum, thread) => sum + thread.unread, 0), [threads]);
   const onlineCount = 0;
@@ -458,6 +515,26 @@ export default function MessageThreadPage() {
     };
   }, [markThreadRead]);
 
+  const clearRemoteTypingIndicators = useCallback(() => {
+    Object.values(typingTimeoutsRef.current).forEach((timeoutId) => clearTimeout(timeoutId));
+    typingTimeoutsRef.current = {};
+    setTypingUserIds([]);
+  }, []);
+
+  const resetLocalTypingRuntimeState = useCallback(() => {
+    localTypingStateRef.current = false;
+    lastSentTypingStateRef.current = null;
+    lastTrueTypingSentAtRef.current = 0;
+    if (typingTrueThrottleTimerRef.current) {
+      clearTimeout(typingTrueThrottleTimerRef.current);
+      typingTrueThrottleTimerRef.current = null;
+    }
+    if (stopTypingTimerRef.current) {
+      clearTimeout(stopTypingTimerRef.current);
+      stopTypingTimerRef.current = null;
+    }
+  }, []);
+
   useEffect(() => {
     if (!threadId) {
       return;
@@ -500,6 +577,8 @@ export default function MessageThreadPage() {
       if (status === "connected") {
         echoReconnectAttemptRef.current = 0;
         clearReconnectTimer();
+        resetLocalTypingRuntimeState();
+        clearRemoteTypingIndicators();
 
         void Promise.all([refreshConversation(), refreshThreads(), refreshMessages()]).catch(() => undefined);
         return;
@@ -569,14 +648,13 @@ export default function MessageThreadPage() {
     });
 
     return () => {
-      Object.values(typingTimeoutsRef.current).forEach((timeoutId) => clearTimeout(timeoutId));
-      typingTimeoutsRef.current = {};
-      setTypingUserIds([]);
+      clearRemoteTypingIndicators();
+      resetLocalTypingRuntimeState();
       unsubscribeConnection();
       clearReconnectTimer();
       echo.leave(`conversation.${threadId}`);
     };
-  }, [currentUserId, dispatch, refreshConversation, refreshMessages, refreshThreads, threadId]);
+  }, [clearRemoteTypingIndicators, currentUserId, dispatch, refreshConversation, refreshMessages, refreshThreads, resetLocalTypingRuntimeState, threadId]);
 
   const handleMessageScroll = () => {
     const viewport = messageViewportRef.current;
@@ -605,6 +683,127 @@ export default function MessageThreadPage() {
     }
   };
 
+  const sendTypingStatus = useCallback(
+    async (isTyping: boolean) => {
+      if (!threadId || !canEmitTyping || typingForbiddenRef.current) {
+        return;
+      }
+
+      localTypingStateRef.current = isTyping;
+
+      if (!isTyping && typingTrueThrottleTimerRef.current) {
+        clearTimeout(typingTrueThrottleTimerRef.current);
+        typingTrueThrottleTimerRef.current = null;
+      }
+
+      if (lastSentTypingStateRef.current === isTyping) {
+        return;
+      }
+
+      if (isTyping) {
+        const now = Date.now();
+        const elapsed = now - lastTrueTypingSentAtRef.current;
+        if (lastTrueTypingSentAtRef.current > 0 && elapsed < TYPING_TRUE_THROTTLE_MS) {
+          if (!typingTrueThrottleTimerRef.current) {
+            typingTrueThrottleTimerRef.current = setTimeout(() => {
+              typingTrueThrottleTimerRef.current = null;
+              void sendTypingStatus(true);
+            }, TYPING_TRUE_THROTTLE_MS - elapsed);
+          }
+          return;
+        }
+      }
+
+      try {
+        await updateTyping(threadId, isTyping);
+        lastSentTypingStateRef.current = isTyping;
+        if (isTyping) {
+          lastTrueTypingSentAtRef.current = Date.now();
+        }
+      } catch (error) {
+        const axiosError = error as AxiosError;
+        if (axiosError.response?.status === 403) {
+          typingForbiddenRef.current = true;
+          localTypingStateRef.current = false;
+          lastSentTypingStateRef.current = null;
+          if (typingTrueThrottleTimerRef.current) {
+            clearTimeout(typingTrueThrottleTimerRef.current);
+            typingTrueThrottleTimerRef.current = null;
+          }
+          if (stopTypingTimerRef.current) {
+            clearTimeout(stopTypingTimerRef.current);
+            stopTypingTimerRef.current = null;
+          }
+        }
+        // Typing updates are best-effort.
+      }
+    },
+    [canEmitTyping, threadId]
+  );
+
+  const resetStopTypingTimer = useCallback(() => {
+    if (stopTypingTimerRef.current) {
+      clearTimeout(stopTypingTimerRef.current);
+    }
+
+    stopTypingTimerRef.current = setTimeout(() => {
+      stopTypingTimerRef.current = null;
+      void sendTypingStatus(false);
+    }, TYPING_IDLE_TIMEOUT_MS);
+  }, [sendTypingStatus]);
+
+  const handleDraftChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const nextDraft = event.target.value;
+      setDraft(nextDraft);
+
+      if (!canEmitTyping || !threadId) {
+        return;
+      }
+
+      if (nextDraft.trim() === "") {
+        if (stopTypingTimerRef.current) {
+          clearTimeout(stopTypingTimerRef.current);
+          stopTypingTimerRef.current = null;
+        }
+
+        void sendTypingStatus(false);
+        return;
+      }
+
+      void sendTypingStatus(true);
+
+      resetStopTypingTimer();
+    },
+    [canEmitTyping, resetStopTypingTimer, sendTypingStatus, threadId]
+  );
+
+  useEffect(() => {
+    const handleWindowBlur = () => {
+      void sendTypingStatus(false);
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        void sendTypingStatus(false);
+      }
+    };
+
+    window.addEventListener("blur", handleWindowBlur);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("blur", handleWindowBlur);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [sendTypingStatus]);
+
+  useEffect(() => {
+    return () => {
+      void sendTypingStatus(false);
+    };
+  }, [sendTypingStatus]);
+
   const handleSend = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
@@ -612,6 +811,12 @@ export default function MessageThreadPage() {
     if (!body || !threadId || participant?.participant_state !== "accepted") {
       return;
     }
+
+    if (stopTypingTimerRef.current) {
+      clearTimeout(stopTypingTimerRef.current);
+      stopTypingTimerRef.current = null;
+    }
+    void sendTypingStatus(false);
 
     setSendError(null);
     setIsSending(true);
@@ -1050,7 +1255,14 @@ export default function MessageThreadPage() {
                 <input
                   type="text"
                   value={draft}
-                  onChange={(event) => setDraft(event.target.value)}
+                  onChange={handleDraftChange}
+                  onBlur={() => {
+                    if (stopTypingTimerRef.current) {
+                      clearTimeout(stopTypingTimerRef.current);
+                      stopTypingTimerRef.current = null;
+                    }
+                    void sendTypingStatus(false);
+                  }}
                   placeholder="Type a message..."
                   className="h-10 flex-1 rounded-full border border-slate-300 bg-white px-4 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-200"
                   disabled={!canSendMessage || isLoading}
