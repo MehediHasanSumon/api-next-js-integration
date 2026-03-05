@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import api from "@/lib/axios";
 import { AxiosError } from "axios";
 import { normalizeEmail } from "@/lib/utils";
+import { resolvePostLoginRedirect } from "@/lib/auth-routing";
 import Input from "@/components/Input";
 import Button from "@/components/Button";
 import Checkbox from "@/components/Checkbox";
@@ -46,7 +47,10 @@ export default function Login() {
         password,
         remember: rememberMe,
       });
-      router.push("/dashboard");
+      const redirect = typeof window !== "undefined"
+        ? new URLSearchParams(window.location.search).get("redirect")
+        : null;
+      router.push(resolvePostLoginRedirect(redirect));
     } catch (error) {
       const axiosError = error as AxiosError<{ errors?: Record<string, string[]>; message?: string }>;
       if (axiosError.response?.data?.errors) {

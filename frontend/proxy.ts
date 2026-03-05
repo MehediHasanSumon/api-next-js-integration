@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { GUEST_ONLY_PATHS, PROTECTED_PREFIXES } from "@/lib/auth-routing";
 
-const PROTECTED_PREFIXES = ["/dashboard", "/users", "/roles", "/permissions"];
-const GUEST_ONLY_PATHS = new Set(["/login", "/register", "/forgot-password", "/reset-password"]);
 const SESSION_COOKIE_HINT = /(^|;\s)[^=]*session[^=]*=/i;
 
 const getUserEndpoint = (): string | null => {
@@ -62,10 +61,18 @@ export async function proxy(request: NextRequest) {
     return NextResponse.next();
   }
 
-  const authenticated = await isAuthenticated(request);
   const hasSession = hasSessionCookie(request);
 
   if (isProtectedPath && !hasSession) {
+    const loginUrl = new URL("/login", request.url);
+    loginUrl.searchParams.set("redirect", pathname);
+    return NextResponse.redirect(loginUrl);
+  }
+
+  const authenticated =
+    isGuestOnlyPath || (isProtectedPath && hasSession) ? await isAuthenticated(request) : false;
+
+  if (isProtectedPath && !authenticated) {
     const loginUrl = new URL("/login", request.url);
     loginUrl.searchParams.set("redirect", pathname);
     return NextResponse.redirect(loginUrl);
@@ -84,6 +91,8 @@ export const config = {
     "/users/:path*",
     "/roles/:path*",
     "/permissions/:path*",
+    "/masseges/:path*",
+    "/message/:path*",
     "/login",
     "/register",
     "/forgot-password",
