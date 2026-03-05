@@ -101,4 +101,34 @@ class RoleManagementController extends Controller
             'message' => 'Role deleted successfully',
         ]);
     }
+
+    public function bulkDestroy(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'ids' => 'required|array|min:1',
+            'ids.*' => 'integer|distinct|exists:roles,id',
+        ]);
+
+        $ids = collect($validated['ids'])->map(fn (int $id) => (int) $id)->values();
+
+        $adminRoleExists = Role::query()
+            ->whereIn('id', $ids->all())
+            ->where('name', 'admin')
+            ->exists();
+
+        if ($adminRoleExists) {
+            return response()->json([
+                'message' => 'Admin role cannot be deleted',
+            ], 422);
+        }
+
+        $deleted = Role::query()
+            ->whereIn('id', $ids->all())
+            ->delete();
+
+        return response()->json([
+            'message' => 'Roles deleted successfully',
+            'deleted' => $deleted,
+        ]);
+    }
 }

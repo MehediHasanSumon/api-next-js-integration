@@ -140,4 +140,29 @@ class UserManagementController extends Controller
             'message' => 'User deleted successfully',
         ]);
     }
+
+    public function bulkDestroy(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'ids' => 'required|array|min:1',
+            'ids.*' => 'integer|distinct|exists:users,id',
+        ]);
+
+        $ids = collect($validated['ids'])->map(fn (int $id) => (int) $id)->values();
+
+        if ($ids->contains((int) $request->user()->id)) {
+            return response()->json([
+                'message' => 'You cannot delete your own account',
+            ], 422);
+        }
+
+        $deleted = User::query()
+            ->whereIn('id', $ids->all())
+            ->delete();
+
+        return response()->json([
+            'message' => 'Users deleted successfully',
+            'deleted' => $deleted,
+        ]);
+    }
 }

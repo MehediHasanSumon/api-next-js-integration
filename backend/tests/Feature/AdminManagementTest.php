@@ -40,6 +40,21 @@ test('authenticated user can crud permissions', function () {
         ->assertJsonPath('message', 'Permission deleted successfully');
 });
 
+test('authenticated user can bulk delete permissions', function () {
+    $authUser = User::factory()->create();
+    $this->actingAs($authUser);
+
+    $permissionA = Permission::create(['name' => 'reports.view', 'guard_name' => 'web']);
+    $permissionB = Permission::create(['name' => 'reports.update', 'guard_name' => 'web']);
+
+    $this->postJson('/api/admin/permissions/bulk-delete', [
+        'ids' => [$permissionA->id, $permissionB->id],
+    ])->assertOk()->assertJsonPath('deleted', 2);
+
+    $this->assertDatabaseMissing('permissions', ['id' => $permissionA->id]);
+    $this->assertDatabaseMissing('permissions', ['id' => $permissionB->id]);
+});
+
 test('authenticated user can filter and paginate users', function () {
     $authUser = User::factory()->create();
     $this->actingAs($authUser);
@@ -145,6 +160,21 @@ test('authenticated user can crud roles with permission sync', function () {
         ->assertJsonPath('message', 'Role deleted successfully');
 });
 
+test('bulk delete roles blocks admin role', function () {
+    $authUser = User::factory()->create();
+    $this->actingAs($authUser);
+
+    $adminRole = Role::create(['name' => 'admin', 'guard_name' => 'web']);
+    $managerRole = Role::create(['name' => 'manager', 'guard_name' => 'web']);
+
+    $this->postJson('/api/admin/roles/bulk-delete', [
+        'ids' => [$adminRole->id, $managerRole->id],
+    ])->assertStatus(422)->assertJsonPath('message', 'Admin role cannot be deleted');
+
+    $this->assertDatabaseHas('roles', ['id' => $adminRole->id]);
+    $this->assertDatabaseHas('roles', ['id' => $managerRole->id]);
+});
+
 test('authenticated user can crud users with role assignment', function () {
     $authUser = User::factory()->create();
     $this->actingAs($authUser);
@@ -182,4 +212,33 @@ test('authenticated user can crud users with role assignment', function () {
     $this->deleteJson("/api/admin/users/{$user->id}")
         ->assertOk()
         ->assertJsonPath('message', 'User deleted successfully');
+});
+
+test('authenticated user can bulk delete users except self', function () {
+    $authUser = User::factory()->create();
+    $this->actingAs($authUser);
+
+    $userA = User::factory()->create();
+    $userB = User::factory()->create();
+
+    $this->postJson('/api/admin/users/bulk-delete', [
+        'ids' => [$userA->id, $userB->id],
+    ])->assertOk()->assertJsonPath('deleted', 2);
+
+    $this->assertDatabaseMissing('users', ['id' => $userA->id]);
+    $this->assertDatabaseMissing('users', ['id' => $userB->id]);
+});
+
+test('bulk delete users blocks deleting own account', function () {
+    $authUser = User::factory()->create();
+    $this->actingAs($authUser);
+
+    $otherUser = User::factory()->create();
+
+    $this->postJson('/api/admin/users/bulk-delete', [
+        'ids' => [$authUser->id, $otherUser->id],
+    ])->assertStatus(422)->assertJsonPath('message', 'You cannot delete your own account');
+
+    $this->assertDatabaseHas('users', ['id' => $authUser->id]);
+    $this->assertDatabaseHas('users', ['id' => $otherUser->id]);
 });

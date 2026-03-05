@@ -74,4 +74,23 @@ class PermissionManagementController extends Controller
             'message' => 'Permission deleted successfully',
         ]);
     }
+
+    public function bulkDestroy(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'ids' => 'required|array|min:1',
+            'ids.*' => 'integer|distinct|exists:permissions,id',
+        ]);
+
+        $ids = collect($validated['ids'])->map(fn (int $id) => (int) $id)->values();
+
+        $deleted = Permission::query()
+            ->whereIn('id', $ids->all())
+            ->delete();
+
+        return response()->json([
+            'message' => 'Permissions deleted successfully',
+            'deleted' => $deleted,
+        ]);
+    }
 }

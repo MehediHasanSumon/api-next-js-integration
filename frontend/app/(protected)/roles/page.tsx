@@ -6,6 +6,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import api from "@/lib/axios";
 import ProtectedShell from "@/components/ProtectedShell";
 import Button from "@/components/Button";
+import DeleteConfirmModal from "@/components/DeleteConfirmModal";
 import FormInput from "@/components/form/FormInput";
 import FormLabel from "@/components/form/FormLabel";
 import FormOptionCheckbox from "@/components/form/FormOptionCheckbox";
@@ -42,6 +43,12 @@ interface PaginationMeta {
   to: number | null;
 }
 
+interface DeleteTarget {
+  ids: number[];
+  label: string;
+  isBulk: boolean;
+}
+
 const DEFAULT_PER_PAGE = 10;
 
 const normalizePage = (rawPage: string | null): number => {
@@ -65,6 +72,9 @@ export default function RolesManagementPage() {
   const [submitting, setSubmitting] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [selectedRoleIds, setSelectedRoleIds] = useState<number[]>([]);
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [errors, setErrors] = useState<Record<string, string[]>>({});
 
   const [name, setName] = useState("");
@@ -83,6 +93,11 @@ export default function RolesManagementPage() {
   });
 
   const isEditMode = useMemo(() => editingId !== null, [editingId]);
+  const selectedRoleIdsSet = useMemo(() => new Set(selectedRoleIds), [selectedRoleIds]);
+  const allVisibleSelected = useMemo(
+    () => roles.length > 0 && roles.every((role) => selectedRoleIdsSet.has(role.id)),
+    [roles, selectedRoleIdsSet]
+  );
   const searchParamsString = searchParams.toString();
 
   const updateQueryParams = useCallback(
@@ -146,6 +161,8 @@ export default function RolesManagementPage() {
       });
 
       setRoles(response.data.data);
+      const visibleIds = new Set(response.data.data.map((role) => role.id));
+      setSelectedRoleIds((previous) => previous.filter((id) => visibleIds.has(id)));
       setErrors((previous) => {
         if (!previous.general) {
           return previous;
@@ -286,18 +303,82 @@ export default function RolesManagementPage() {
     setErrors({});
   };
 
-  const handleDelete = async (roleId: number) => {
-    if (!window.confirm("Delete this role?")) {
+  const openDeleteModal = (role: Role) => {
+    setDeleteTarget({ ids: [role.id], label: `${role.name} (ID: ${role.id})`, isBulk: false });
+  };
+
+  const openBulkDeleteModal = () => {
+    if (selectedRoleIds.length === 0) {
       return;
     }
 
+    setDeleteTarget({
+      ids: selectedRoleIds,
+      label: `${selectedRoleIds.length} roles selected`,
+      isBulk: true,
+    });
+  };
+
+  const closeDeleteModal = () => {
+    if (deleting) {
+      return;
+    }
+
+    setDeleteTarget(null);
+  };
+
+  const handleDelete = async () => {
+    if (!deleteTarget) {
+      return;
+    }
+
+    setDeleting(true);
+
     try {
-      await api.delete(`/admin/roles/${roleId}`);
+      if (deleteTarget.isBulk) {
+        await api.post("/admin/roles/bulk-delete", {
+          ids: deleteTarget.ids,
+        });
+        setSelectedRoleIds([]);
+      } else {
+        await api.delete(`/admin/roles/${deleteTarget.ids[0]}`);
+      }
+
+      setDeleteTarget(null);
       await loadRoles();
     } catch (error) {
       const axiosError = error as AxiosError<{ message?: string }>;
       setErrors({ general: [axiosError.response?.data?.message || "Failed to delete role"] });
+    } finally {
+      setDeleting(false);
     }
+  };
+
+  const handleToggleRoleSelection = (roleId: number, checked: boolean) => {
+    setSelectedRoleIds((previous) => {
+      if (checked) {
+        if (previous.includes(roleId)) {
+          return previous;
+        }
+
+        return [...previous, roleId];
+      }
+
+      return previous.filter((id) => id !== roleId);
+    });
+  };
+
+  const handleToggleSelectAllVisible = (checked: boolean) => {
+    const visibleIds = roles.map((role) => role.id);
+
+    setSelectedRoleIds((previous) => {
+      if (checked) {
+        return Array.from(new Set([...previous, ...visibleIds]));
+      }
+
+      const visibleSet = new Set(visibleIds);
+      return previous.filter((id) => !visibleSet.has(id));
+    });
   };
 
   const goToPage = (page: number) => {
@@ -421,9 +502,16 @@ export default function RolesManagementPage() {
         <section className="rounded-2xl border border-white/60 bg-white/80 p-5">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <h2 className="text-sm font-semibold text-slate-900">Roles Table</h2>
-            <p className="text-xs text-slate-500">
-              Showing {pagination.from ?? 0}-{pagination.to ?? 0} of {pagination.total}
-            </p>
+            {selectedRoleIds.length > 0 && (
+              <Button
+                type="button"
+                variant="danger"
+                size="sm"
+                onClick={openBulkDeleteModal}
+              >
+                Delete Selected ({selectedRoleIds.length})
+              </Button>
+            )}
           </div>
 
           {loading ? (
@@ -434,6 +522,14 @@ export default function RolesManagementPage() {
                 <table className="min-w-full text-left text-sm">
                   <thead>
                     <tr className="border-b border-slate-200 text-slate-500">
+                      <th className="px-2 py-2 font-medium">
+                        <input
+                          type="checkbox"
+                          checked={allVisibleSelected}
+                          onChange={(event) => handleToggleSelectAllVisible(event.target.checked)}
+                          aria-label="Select all visible roles"
+                        />
+                      </th>
                       <th className="px-2 py-2 font-medium">Role</th>
                       <th className="px-2 py-2 font-medium">Permissions</th>
                       <th className="px-2 py-2 font-medium">Actions</th>
@@ -442,7 +538,7 @@ export default function RolesManagementPage() {
                   <tbody>
                     {roles.length === 0 && (
                       <tr>
-                        <td colSpan={3} className="px-2 py-6 text-center text-sm text-slate-500">
+                        <td colSpan={4} className="px-2 py-6 text-center text-sm text-slate-500">
                           No roles found for selected filters.
                         </td>
                       </tr>
@@ -450,6 +546,14 @@ export default function RolesManagementPage() {
 
                     {roles.map((role) => (
                       <tr key={role.id} className="border-b border-slate-100 text-slate-700">
+                        <td className="px-2 py-2">
+                          <input
+                            type="checkbox"
+                            checked={selectedRoleIdsSet.has(role.id)}
+                            onChange={(event) => handleToggleRoleSelection(role.id, event.target.checked)}
+                            aria-label={`Select role ${role.name}`}
+                          />
+                        </td>
                         <td className="px-2 py-2 font-medium">{role.name}</td>
                         <td className="px-2 py-2">
                           <div className="flex flex-wrap gap-1">
@@ -466,7 +570,7 @@ export default function RolesManagementPage() {
                             <Button type="button" onClick={() => handleEdit(role)} variant="outline" size="sm">
                               Edit
                             </Button>
-                            <Button type="button" onClick={() => handleDelete(role.id)} variant="danger" size="sm">
+                            <Button type="button" onClick={() => openDeleteModal(role)} variant="danger" size="sm">
                               Delete
                             </Button>
                           </div>
@@ -478,9 +582,15 @@ export default function RolesManagementPage() {
               </div>
 
               <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <p className="text-xs text-slate-500">
-                  Page {pagination.currentPage} of {pagination.lastPage || 1}
-                </p>
+                <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                  <p>
+                    Page {pagination.currentPage} of {pagination.lastPage || 1}
+                  </p>
+                  <span aria-hidden="true">|</span>
+                  <p>
+                    Showing {pagination.from ?? 0}-{pagination.to ?? 0} of {pagination.total}
+                  </p>
+                </div>
 
                 <div className="flex flex-wrap items-center gap-2">
                   <Button
@@ -516,6 +626,20 @@ export default function RolesManagementPage() {
           {errors.general && <p className="mt-3 text-xs text-amber-600">{errors.general[0]}</p>}
         </section>
       </div>
+      <DeleteConfirmModal
+        isOpen={deleteTarget !== null}
+        title={deleteTarget?.isBulk ? "Delete selected roles" : "Delete role"}
+        description={
+          deleteTarget?.isBulk
+            ? "Are you sure you want to delete selected roles? This action cannot be undone."
+            : "Are you sure you want to delete this role? This action cannot be undone."
+        }
+        itemName={deleteTarget ? deleteTarget.label : undefined}
+        confirmLabel={deleteTarget?.isBulk ? "Delete Roles" : "Delete Role"}
+        loading={deleting}
+        onCancel={closeDeleteModal}
+        onConfirm={handleDelete}
+      />
     </ProtectedShell>
   );
 }

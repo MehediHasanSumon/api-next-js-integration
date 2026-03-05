@@ -18,16 +18,19 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::prefix('admin')->group(function () {
         Route::get('/users', [UserManagementController::class, 'index']);
         Route::post('/users', [UserManagementController::class, 'store']);
+        Route::post('/users/bulk-delete', [UserManagementController::class, 'bulkDestroy']);
         Route::put('/users/{user}', [UserManagementController::class, 'update']);
         Route::delete('/users/{user}', [UserManagementController::class, 'destroy']);
 
         Route::get('/roles', [RoleManagementController::class, 'index']);
         Route::post('/roles', [RoleManagementController::class, 'store']);
+        Route::post('/roles/bulk-delete', [RoleManagementController::class, 'bulkDestroy']);
         Route::put('/roles/{role}', [RoleManagementController::class, 'update']);
         Route::delete('/roles/{role}', [RoleManagementController::class, 'destroy']);
 
         Route::get('/permissions', [PermissionManagementController::class, 'index']);
         Route::post('/permissions', [PermissionManagementController::class, 'store']);
+        Route::post('/permissions/bulk-delete', [PermissionManagementController::class, 'bulkDestroy']);
         Route::put('/permissions/{permission}', [PermissionManagementController::class, 'update']);
         Route::delete('/permissions/{permission}', [PermissionManagementController::class, 'destroy']);
     });

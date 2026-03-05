@@ -6,6 +6,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import api from "@/lib/axios";
 import ProtectedShell from "@/components/ProtectedShell";
 import Button from "@/components/Button";
+import DeleteConfirmModal from "@/components/DeleteConfirmModal";
 import FormCheckbox from "@/components/form/FormCheckbox";
 import FormInput from "@/components/form/FormInput";
 import FormLabel from "@/components/form/FormLabel";
@@ -45,6 +46,12 @@ interface PaginationMeta {
   to: number | null;
 }
 
+interface DeleteTarget {
+  ids: number[];
+  label: string;
+  isBulk: boolean;
+}
+
 const DEFAULT_PER_PAGE = 10;
 
 const normalizePage = (rawPage: string | null): number => {
@@ -68,6 +75,9 @@ export default function UsersManagementPage() {
   const [submitting, setSubmitting] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [selectedUserIds, setSelectedUserIds] = useState<number[]>([]);
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [errors, setErrors] = useState<Record<string, string[]>>({});
 
   const [name, setName] = useState("");
@@ -91,6 +101,11 @@ export default function UsersManagementPage() {
   });
 
   const isEditMode = useMemo(() => editingId !== null, [editingId]);
+  const selectedUserIdsSet = useMemo(() => new Set(selectedUserIds), [selectedUserIds]);
+  const allVisibleSelected = useMemo(
+    () => users.length > 0 && users.every((user) => selectedUserIdsSet.has(user.id)),
+    [users, selectedUserIdsSet]
+  );
   const searchParamsString = searchParams.toString();
 
   const updateQueryParams = useCallback(
@@ -158,6 +173,8 @@ export default function UsersManagementPage() {
       });
 
       setUsers(response.data.data);
+      const visibleIds = new Set(response.data.data.map((user) => user.id));
+      setSelectedUserIds((previous) => previous.filter((id) => visibleIds.has(id)));
       setErrors((previous) => {
         if (!previous.general) {
           return previous;
@@ -341,18 +358,82 @@ export default function UsersManagementPage() {
     setErrors({});
   };
 
-  const handleDelete = async (userId: number) => {
-    if (!window.confirm("Delete this user?")) {
+  const openDeleteModal = (user: User) => {
+    setDeleteTarget({ ids: [user.id], label: `${user.name} (ID: ${user.id})`, isBulk: false });
+  };
+
+  const openBulkDeleteModal = () => {
+    if (selectedUserIds.length === 0) {
       return;
     }
 
+    setDeleteTarget({
+      ids: selectedUserIds,
+      label: `${selectedUserIds.length} users selected`,
+      isBulk: true,
+    });
+  };
+
+  const closeDeleteModal = () => {
+    if (deleting) {
+      return;
+    }
+
+    setDeleteTarget(null);
+  };
+
+  const handleDelete = async () => {
+    if (!deleteTarget) {
+      return;
+    }
+
+    setDeleting(true);
+
     try {
-      await api.delete(`/admin/users/${userId}`);
+      if (deleteTarget.isBulk) {
+        await api.post("/admin/users/bulk-delete", {
+          ids: deleteTarget.ids,
+        });
+        setSelectedUserIds([]);
+      } else {
+        await api.delete(`/admin/users/${deleteTarget.ids[0]}`);
+      }
+
+      setDeleteTarget(null);
       await loadUsers();
     } catch (error) {
       const axiosError = error as AxiosError<{ message?: string }>;
       setErrors({ general: [axiosError.response?.data?.message || "Failed to delete user"] });
+    } finally {
+      setDeleting(false);
     }
+  };
+
+  const handleToggleUserSelection = (userId: number, checked: boolean) => {
+    setSelectedUserIds((previous) => {
+      if (checked) {
+        if (previous.includes(userId)) {
+          return previous;
+        }
+
+        return [...previous, userId];
+      }
+
+      return previous.filter((id) => id !== userId);
+    });
+  };
+
+  const handleToggleSelectAllVisible = (checked: boolean) => {
+    const visibleIds = users.map((user) => user.id);
+
+    setSelectedUserIds((previous) => {
+      if (checked) {
+        return Array.from(new Set([...previous, ...visibleIds]));
+      }
+
+      const visibleSet = new Set(visibleIds);
+      return previous.filter((id) => !visibleSet.has(id));
+    });
   };
 
   const goToPage = (page: number) => {
@@ -540,9 +621,16 @@ export default function UsersManagementPage() {
         <section className="rounded-2xl border border-white/60 bg-white/80 p-5">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <h2 className="text-sm font-semibold text-slate-900">Users Table</h2>
-            <p className="text-xs text-slate-500">
-              Showing {pagination.from ?? 0}-{pagination.to ?? 0} of {pagination.total}
-            </p>
+            {selectedUserIds.length > 0 && (
+              <Button
+                type="button"
+                variant="danger"
+                size="sm"
+                onClick={openBulkDeleteModal}
+              >
+                Delete Selected ({selectedUserIds.length})
+              </Button>
+            )}
           </div>
 
           {loading ? (
@@ -553,6 +641,14 @@ export default function UsersManagementPage() {
                 <table className="min-w-full text-left text-sm">
                   <thead>
                     <tr className="border-b border-slate-200 text-slate-500">
+                      <th className="px-2 py-2 font-medium">
+                        <input
+                          type="checkbox"
+                          checked={allVisibleSelected}
+                          onChange={(event) => handleToggleSelectAllVisible(event.target.checked)}
+                          aria-label="Select all visible users"
+                        />
+                      </th>
                       <th className="px-2 py-2 font-medium">Name</th>
                       <th className="px-2 py-2 font-medium">Email</th>
                       <th className="px-2 py-2 font-medium">Email Verified</th>
@@ -563,7 +659,7 @@ export default function UsersManagementPage() {
                   <tbody>
                     {users.length === 0 && (
                       <tr>
-                        <td colSpan={5} className="px-2 py-6 text-center text-sm text-slate-500">
+                        <td colSpan={6} className="px-2 py-6 text-center text-sm text-slate-500">
                           No users found for selected filters.
                         </td>
                       </tr>
@@ -571,6 +667,14 @@ export default function UsersManagementPage() {
 
                     {users.map((user) => (
                       <tr key={user.id} className="border-b border-slate-100 text-slate-700">
+                        <td className="px-2 py-2">
+                          <input
+                            type="checkbox"
+                            checked={selectedUserIdsSet.has(user.id)}
+                            onChange={(event) => handleToggleUserSelection(user.id, event.target.checked)}
+                            aria-label={`Select user ${user.name}`}
+                          />
+                        </td>
                         <td className="px-2 py-2">{user.name}</td>
                         <td className="px-2 py-2">{user.email}</td>
                         <td className="px-2 py-2 text-xs">
@@ -602,7 +706,7 @@ export default function UsersManagementPage() {
                             </Button>
                             <Button
                               type="button"
-                              onClick={() => handleDelete(user.id)}
+                              onClick={() => openDeleteModal(user)}
                               variant="danger"
                               size="sm"
                             >
@@ -617,9 +721,15 @@ export default function UsersManagementPage() {
               </div>
 
               <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <p className="text-xs text-slate-500">
-                  Page {pagination.currentPage} of {pagination.lastPage || 1}
-                </p>
+                <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                  <p>
+                    Page {pagination.currentPage} of {pagination.lastPage || 1}
+                  </p>
+                  <span aria-hidden="true">|</span>
+                  <p>
+                    Showing {pagination.from ?? 0}-{pagination.to ?? 0} of {pagination.total}
+                  </p>
+                </div>
 
                 <div className="flex flex-wrap items-center gap-2">
                   <Button
@@ -661,6 +771,20 @@ export default function UsersManagementPage() {
           {errors.general && <p className="mt-3 text-xs text-amber-600">{errors.general[0]}</p>}
         </section>
       </div>
+      <DeleteConfirmModal
+        isOpen={deleteTarget !== null}
+        title={deleteTarget?.isBulk ? "Delete selected users" : "Delete user"}
+        description={
+          deleteTarget?.isBulk
+            ? "Are you sure you want to delete selected users? This action cannot be undone."
+            : "Are you sure you want to delete this user? This action cannot be undone."
+        }
+        itemName={deleteTarget ? deleteTarget.label : undefined}
+        confirmLabel={deleteTarget?.isBulk ? "Delete Users" : "Delete User"}
+        loading={deleting}
+        onCancel={closeDeleteModal}
+        onConfirm={handleDelete}
+      />
     </ProtectedShell>
   );
 }
