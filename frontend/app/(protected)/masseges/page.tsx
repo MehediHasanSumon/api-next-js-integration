@@ -6,95 +6,28 @@ import { useRouter } from "next/navigation";
 import type { AxiosError } from "axios";
 import ProtectedShell from "@/components/ProtectedShell";
 import Button from "@/components/Button";
-import { listConversations, startConversation } from "@/lib/chat-api";
-import type { ConversationListItem } from "@/types/chat";
+import { startConversation } from "@/lib/chat-api";
+import { useAppDispatch, useAppSelector } from "@/store/hooks";
+import { fetchInboxThreads } from "@/store/chatSlice";
 
 type ThreadFilter = "inbox" | "unread";
 
-interface ThreadItem {
-  id: string;
-  name: string;
-  handle: string;
-  lastMessage: string;
-  lastTime: string;
-  unread: number;
-}
-
-const formatLastSeen = (rawDate: string | null): string => {
-  if (!rawDate) {
-    return "-";
-  }
-
-  const date = new Date(rawDate);
-  if (Number.isNaN(date.getTime())) {
-    return "-";
-  }
-
-  const diffMs = Date.now() - date.getTime();
-  const minute = 60 * 1000;
-  const hour = 60 * minute;
-  const day = 24 * hour;
-
-  if (diffMs < hour) {
-    return `${Math.max(1, Math.floor(diffMs / minute))}m`;
-  }
-
-  if (diffMs < day) {
-    return `${Math.floor(diffMs / hour)}h`;
-  }
-
-  if (diffMs < day * 2) {
-    return "Yesterday";
-  }
-
-  return date.toLocaleDateString();
-};
-
-const mapConversationToThread = (conversation: ConversationListItem): ThreadItem => {
-  const counterpartName = conversation.counterpart?.name?.trim();
-  const counterpartEmail = conversation.counterpart?.email;
-  const name = conversation.title?.trim() || counterpartName || conversation.last_message?.sender?.name || `Conversation #${conversation.conversation_id}`;
-  const handle = counterpartEmail ? `@${counterpartEmail.split("@")[0]}` : `#${conversation.conversation_id}`;
-  const lastMessage =
-    conversation.last_message?.body?.trim() ||
-    (conversation.last_message ? `[${conversation.last_message.message_type}]` : "No messages yet");
-  const lastActivity = conversation.last_message?.created_at ?? conversation.last_message_at;
-
-  return {
-    id: String(conversation.conversation_id),
-    name,
-    handle,
-    lastMessage,
-    lastTime: formatLastSeen(lastActivity),
-    unread: conversation.unread_count,
-  };
-};
-
 export default function MassegesPage() {
   const router = useRouter();
+  const dispatch = useAppDispatch();
+  const threads = useAppSelector((state) => state.chat.threads);
+  const isLoading = useAppSelector((state) => state.chat.loading);
+  const errorMessage = useAppSelector((state) => state.chat.error);
   const [searchQuery, setSearchQuery] = useState("");
   const [filter, setFilter] = useState<ThreadFilter>("inbox");
-  const [threads, setThreads] = useState<ThreadItem[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isNewChatOpen, setIsNewChatOpen] = useState(false);
   const [newChatEmail, setNewChatEmail] = useState("");
   const [newChatError, setNewChatError] = useState<string | null>(null);
   const [isCreatingChat, setIsCreatingChat] = useState(false);
 
   const fetchConversations = useCallback(async () => {
-    setIsLoading(true);
-    setErrorMessage(null);
-
-    try {
-      const response = await listConversations({ filter: "inbox", per_page: 100 });
-      setThreads(response.data.map(mapConversationToThread));
-    } catch {
-      setErrorMessage("Failed to load conversations.");
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
+    await dispatch(fetchInboxThreads());
+  }, [dispatch]);
 
   useEffect(() => {
     void fetchConversations();

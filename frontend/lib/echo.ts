@@ -2,6 +2,8 @@
 
 import Echo from "laravel-echo";
 import Pusher from "pusher-js";
+import api from "@/lib/axios";
+import { ensureCsrfCookie } from "@/lib/csrf";
 
 declare global {
   interface Window {
@@ -63,6 +65,25 @@ export const getEcho = (): Echo<"reverb"> | null => {
         Accept: "application/json",
       },
     },
+    authorizer: (channel: { name: string }) => ({
+      authorize: (socketId, callback) => {
+        void (async () => {
+          try {
+            await ensureCsrfCookie();
+
+            const response = await api.post("/broadcasting/auth", {
+              socket_id: socketId,
+              channel_name: channel.name,
+            });
+
+            callback(null, response.data);
+          } catch (error) {
+            const authError = error instanceof Error ? error : new Error("Broadcast authentication failed.");
+            callback(authError, { auth: "" });
+          }
+        })();
+      },
+    }),
   });
 
   return echoInstance;

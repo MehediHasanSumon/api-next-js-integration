@@ -8,7 +8,6 @@ import ProtectedShell from "@/components/ProtectedShell";
 import Button from "@/components/Button";
 import {
   archiveConversation,
-  listConversations,
   listMessages,
   markConversationRead,
   respondToConversationRequest,
@@ -16,20 +15,13 @@ import {
   showConversation,
   unarchiveConversation,
 } from "@/lib/chat-api";
+import { formatThreadRelativeTime, type ThreadItem } from "@/lib/chat-threads";
 import { getEcho } from "@/lib/echo";
-import { useAppSelector } from "@/store/hooks";
-import type { Conversation, ConversationListItem, ConversationShowResponse, Message } from "@/types/chat";
+import { useAppDispatch, useAppSelector } from "@/store/hooks";
+import { fetchInboxThreads, patchThread } from "@/store/chatSlice";
+import type { Conversation, ConversationShowResponse, Message } from "@/types/chat";
 
 type ThreadFilter = "all" | "unread" | "online";
-
-interface ThreadItem {
-  id: string;
-  name: string;
-  handle: string;
-  lastMessage: string;
-  lastTime: string;
-  unread: number;
-}
 
 interface ChatMessageSentEvent {
   conversation_id: number | string;
@@ -111,25 +103,6 @@ const formatClockTime = (rawDate: string): string => {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 };
 
-const mapConversationToThread = (conversation: ConversationListItem): ThreadItem => {
-  const counterpartName = conversation.counterpart?.name?.trim();
-  const counterpartEmail = conversation.counterpart?.email;
-  const name = conversation.title?.trim() || counterpartName || conversation.last_message?.sender?.name || `Conversation #${conversation.conversation_id}`;
-  const handle = counterpartEmail ? `@${counterpartEmail.split("@")[0]}` : `#${conversation.conversation_id}`;
-  const lastMessage =
-    conversation.last_message?.body?.trim() ||
-    (conversation.last_message ? `[${conversation.last_message.message_type}]` : "No messages yet");
-
-  return {
-    id: String(conversation.conversation_id),
-    name,
-    handle,
-    lastMessage,
-    lastTime: formatRelativeTime(conversation.last_message?.created_at ?? conversation.last_message_at),
-    unread: conversation.unread_count,
-  };
-};
-
 const mapConversationDetailToThread = (
   conversation: Conversation,
   participant: ConversationShowResponse["participant"] | null
@@ -141,7 +114,7 @@ const mapConversationDetailToThread = (
     lastMessage:
       conversation.last_message?.body?.trim() ||
       (conversation.last_message ? `[${conversation.last_message.message_type}]` : "No messages yet"),
-    lastTime: formatRelativeTime(conversation.last_message?.created_at ?? conversation.last_message_at),
+    lastTime: formatThreadRelativeTime(conversation.last_message?.created_at ?? conversation.last_message_at),
     unread: participant?.unread_count ?? 0,
   };
 };
@@ -223,17 +196,18 @@ const generateClientUid = (): string => {
 export default function MessageThreadPage() {
   const params = useParams<{ threadId: string }>();
   const router = useRouter();
+  const dispatch = useAppDispatch();
   const threadId = params?.threadId || "";
 
   const currentUser = useAppSelector((state) => state.auth.user);
   const currentUserId = currentUser?.id ?? null;
+  const threads = useAppSelector((state) => state.chat.threads);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [filter, setFilter] = useState<ThreadFilter>("all");
   const [draft, setDraft] = useState("");
   const [showInfoPanel, setShowInfoPanel] = useState(true);
 
-  const [threads, setThreads] = useState<ThreadItem[]>([]);
   const [conversationData, setConversationData] = useState<ConversationShowResponse | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [typingUserIds, setTypingUserIds] = useState<number[]>([]);
@@ -341,9 +315,8 @@ export default function MessageThreadPage() {
   }, [filter, searchQuery, threads]);
 
   const refreshThreads = useCallback(async () => {
-    const listResponse = await listConversations({ filter: "inbox", per_page: 100 });
-    setThreads(listResponse.data.map(mapConversationToThread));
-  }, []);
+    await dispatch(fetchInboxThreads());
+  }, [dispatch]);
 
   const refreshConversation = useCallback(async () => {
     if (!threadId) {
@@ -543,17 +516,14 @@ export default function MessageThreadPage() {
       }
 
       setMessages((previous) => upsertMessageByIdentity(previous, payload.message));
-
-      setThreads((previous) =>
-        previous.map((thread) =>
-          thread.id === threadId
-            ? {
-                ...thread,
-                lastMessage: payload.message.body?.trim() || `[${payload.message.message_type}]`,
-                lastTime: "now",
-              }
-            : thread
-        )
+      dispatch(
+        patchThread({
+          id: threadId,
+          changes: {
+            lastMessage: payload.message.body?.trim() || `[${payload.message.message_type}]`,
+            lastTime: "now",
+          },
+        })
       );
     });
 
@@ -606,7 +576,7 @@ export default function MessageThreadPage() {
       clearReconnectTimer();
       echo.leave(`conversation.${threadId}`);
     };
-  }, [currentUserId, refreshConversation, refreshMessages, refreshThreads, threadId]);
+  }, [currentUserId, dispatch, refreshConversation, refreshMessages, refreshThreads, threadId]);
 
   const handleMessageScroll = () => {
     const viewport = messageViewportRef.current;
@@ -674,16 +644,14 @@ export default function MessageThreadPage() {
 
     setMessages((previous) => upsertMessageByIdentity(previous, optimisticMessage));
 
-    setThreads((previous) =>
-      previous.map((thread) =>
-        thread.id === threadId
-          ? {
-              ...thread,
-              lastMessage: body,
-              lastTime: "now",
-            }
-          : thread
-      )
+    dispatch(
+      patchThread({
+        id: threadId,
+        changes: {
+          lastMessage: body,
+          lastTime: "now",
+        },
+      })
     );
 
     try {
@@ -695,16 +663,14 @@ export default function MessageThreadPage() {
 
       setMessages((previous) => upsertMessageByIdentity(previous, response.data));
 
-      setThreads((previous) =>
-        previous.map((thread) =>
-          thread.id === threadId
-            ? {
-                ...thread,
-                lastMessage: response.data.body?.trim() || "[text]",
-                lastTime: "now",
-              }
-            : thread
-        )
+      dispatch(
+        patchThread({
+          id: threadId,
+          changes: {
+            lastMessage: response.data.body?.trim() || "[text]",
+            lastTime: "now",
+          },
+        })
       );
 
       const sentMessageId = getMessageIdAsNumber(response.data);
