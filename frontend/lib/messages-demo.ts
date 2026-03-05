@@ -1,22 +1,6 @@
-export interface MessageThreadSummary {
-  id: string;
-  name: string;
-  handle: string;
-  lastMessage: string;
-  lastTime: string;
-  unread: number;
-  pinned?: boolean;
-  online?: boolean;
-}
+import type { DemoConversationSummary, DemoThreadMessage } from "@/types/chat";
 
-export interface ChatMessage {
-  id: string;
-  from: "me" | "them";
-  text: string;
-  time: string;
-}
-
-export const threadSummaries: MessageThreadSummary[] = [
+export const threadSummaries: DemoConversationSummary[] = [
   {
     id: "kjdfndsfnkdn",
     name: "Support Team",
@@ -24,6 +8,7 @@ export const threadSummaries: MessageThreadSummary[] = [
     lastMessage: "Can you share the latest status update?",
     lastTime: "2m",
     unread: 2,
+    participant_state: "accepted",
     pinned: true,
     online: true,
   },
@@ -34,6 +19,7 @@ export const threadSummaries: MessageThreadSummary[] = [
     lastMessage: "Lead follow-up done. Waiting for response.",
     lastTime: "18m",
     unread: 0,
+    participant_state: "accepted",
     online: true,
   },
   {
@@ -43,6 +29,7 @@ export const threadSummaries: MessageThreadSummary[] = [
     lastMessage: "Server patch deployed in production.",
     lastTime: "1h",
     unread: 5,
+    participant_state: "accepted",
     pinned: true,
   },
   {
@@ -52,10 +39,11 @@ export const threadSummaries: MessageThreadSummary[] = [
     lastMessage: "Updated the chat card layout. Please review.",
     lastTime: "3h",
     unread: 0,
+    participant_state: "accepted",
   },
 ];
 
-export const threadMessages: Record<string, ChatMessage[]> = {
+export const threadMessages: Record<string, DemoThreadMessage[]> = {
   kjdfndsfnkdn: [
     { id: "m1", from: "them", text: "Hello, can you confirm the deployment status?", time: "10:42 AM" },
     { id: "m2", from: "me", text: "Deployment is completed. Monitoring is running.", time: "10:44 AM" },

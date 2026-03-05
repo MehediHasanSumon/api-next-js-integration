@@ -1,24 +1,111 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import type { AxiosError } from "axios";
 import ProtectedShell from "@/components/ProtectedShell";
 import Button from "@/components/Button";
-import { threadSummaries } from "@/lib/messages-demo";
+import { listConversations, startConversation } from "@/lib/chat-api";
+import type { ConversationListItem } from "@/types/chat";
 
-type ThreadFilter = "all" | "unread" | "online";
+type ThreadFilter = "inbox" | "unread";
+
+interface ThreadItem {
+  id: string;
+  name: string;
+  handle: string;
+  lastMessage: string;
+  lastTime: string;
+  unread: number;
+}
+
+const formatLastSeen = (rawDate: string | null): string => {
+  if (!rawDate) {
+    return "-";
+  }
+
+  const date = new Date(rawDate);
+  if (Number.isNaN(date.getTime())) {
+    return "-";
+  }
+
+  const diffMs = Date.now() - date.getTime();
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+
+  if (diffMs < hour) {
+    return `${Math.max(1, Math.floor(diffMs / minute))}m`;
+  }
+
+  if (diffMs < day) {
+    return `${Math.floor(diffMs / hour)}h`;
+  }
+
+  if (diffMs < day * 2) {
+    return "Yesterday";
+  }
+
+  return date.toLocaleDateString();
+};
+
+const mapConversationToThread = (conversation: ConversationListItem): ThreadItem => {
+  const counterpartName = conversation.counterpart?.name?.trim();
+  const counterpartEmail = conversation.counterpart?.email;
+  const name = conversation.title?.trim() || counterpartName || conversation.last_message?.sender?.name || `Conversation #${conversation.conversation_id}`;
+  const handle = counterpartEmail ? `@${counterpartEmail.split("@")[0]}` : `#${conversation.conversation_id}`;
+  const lastMessage =
+    conversation.last_message?.body?.trim() ||
+    (conversation.last_message ? `[${conversation.last_message.message_type}]` : "No messages yet");
+  const lastActivity = conversation.last_message?.created_at ?? conversation.last_message_at;
+
+  return {
+    id: String(conversation.conversation_id),
+    name,
+    handle,
+    lastMessage,
+    lastTime: formatLastSeen(lastActivity),
+    unread: conversation.unread_count,
+  };
+};
 
 export default function MassegesPage() {
+  const router = useRouter();
   const [searchQuery, setSearchQuery] = useState("");
-  const [filter, setFilter] = useState<ThreadFilter>("all");
+  const [filter, setFilter] = useState<ThreadFilter>("inbox");
+  const [threads, setThreads] = useState<ThreadItem[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isNewChatOpen, setIsNewChatOpen] = useState(false);
+  const [newChatEmail, setNewChatEmail] = useState("");
+  const [newChatError, setNewChatError] = useState<string | null>(null);
+  const [isCreatingChat, setIsCreatingChat] = useState(false);
 
-  const unreadCount = useMemo(() => threadSummaries.reduce((sum, thread) => sum + thread.unread, 0), []);
-  const onlineCount = useMemo(() => threadSummaries.filter((thread) => thread.online).length, []);
+  const fetchConversations = useCallback(async () => {
+    setIsLoading(true);
+    setErrorMessage(null);
+
+    try {
+      const response = await listConversations({ filter: "inbox", per_page: 100 });
+      setThreads(response.data.map(mapConversationToThread));
+    } catch {
+      setErrorMessage("Failed to load conversations.");
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void fetchConversations();
+  }, [fetchConversations]);
+
+  const unreadCount = useMemo(() => threads.reduce((sum, thread) => sum + thread.unread, 0), [threads]);
 
   const filteredThreads = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
 
-    return threadSummaries.filter((thread) => {
+    return threads.filter((thread) => {
       const matchQuery =
         query === "" ||
         thread.name.toLowerCase().includes(query) ||
@@ -33,15 +120,36 @@ export default function MassegesPage() {
         return thread.unread > 0;
       }
 
-      if (filter === "online") {
-        return Boolean(thread.online);
-      }
-
       return true;
     });
-  }, [filter, searchQuery]);
+  }, [filter, searchQuery, threads]);
 
-  const previewThread = filteredThreads[0] ?? threadSummaries[0];
+  const previewThread = filteredThreads[0] ?? threads[0] ?? null;
+
+  const handleStartConversation = async () => {
+    const email = newChatEmail.trim().toLowerCase();
+    if (!email) {
+      setNewChatError("Please enter a valid email.");
+      return;
+    }
+
+    setNewChatError(null);
+    setIsCreatingChat(true);
+
+    try {
+      const response = await startConversation({ recipient_email: email });
+      setIsNewChatOpen(false);
+      setNewChatEmail("");
+      await fetchConversations();
+      router.push(`/message/t/${response.conversation_id}`);
+    } catch (error) {
+      const axiosError = error as AxiosError<{ message?: string; errors?: Record<string, string[]> }>;
+      const firstValidationError = Object.values(axiosError.response?.data?.errors ?? {})[0]?.[0];
+      setNewChatError(firstValidationError || axiosError.response?.data?.message || "Failed to start conversation.");
+    } finally {
+      setIsCreatingChat(false);
+    }
+  };
 
   return (
     <ProtectedShell title="Masseges" description="Team conversations and quick updates" showPageHeader={false}>
@@ -51,9 +159,14 @@ export default function MassegesPage() {
             <div className="border-b border-slate-200/80 px-4 py-3">
               <div className="mb-3 flex items-center justify-between">
                 <h2 className="text-sm font-semibold text-slate-900">Chats</h2>
-                <span className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-600">
-                  {filteredThreads.length}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-600">
+                    {filteredThreads.length}
+                  </span>
+                  <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => setIsNewChatOpen(true)}>
+                    New Chat
+                  </Button>
+                </div>
               </div>
 
               <div className="relative">
@@ -73,12 +186,12 @@ export default function MassegesPage() {
             <div className="grid grid-cols-3 gap-1 border-b border-slate-200/80 p-2">
               <Button
                 type="button"
-                variant={filter === "all" ? "secondary" : "ghost"}
+                variant={filter === "inbox" ? "secondary" : "ghost"}
                 size="sm"
                 className="h-8 text-xs"
-                onClick={() => setFilter("all")}
+                onClick={() => setFilter("inbox")}
               >
-                All
+                Inbox
               </Button>
               <Button
                 type="button"
@@ -89,19 +202,24 @@ export default function MassegesPage() {
               >
                 Unread {unreadCount > 0 ? `(${unreadCount})` : ""}
               </Button>
-              <Button
-                type="button"
-                variant={filter === "online" ? "secondary" : "ghost"}
-                size="sm"
-                className="h-8 text-xs"
-                onClick={() => setFilter("online")}
-              >
-                Online ({onlineCount})
+              <Button type="button" variant="ghost" size="sm" className="h-8 text-xs" disabled title="Online filter will use realtime presence later">
+                Online
               </Button>
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto p-2">
-              {filteredThreads.length === 0 ? (
+              {isLoading ? (
+                <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-center">
+                  <p className="text-sm font-medium text-slate-700">Loading conversations...</p>
+                </div>
+              ) : errorMessage ? (
+                <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-center">
+                  <p className="text-sm font-medium text-rose-700">{errorMessage}</p>
+                  <Button type="button" size="sm" variant="outline" className="mt-3" onClick={() => void fetchConversations()}>
+                    Retry
+                  </Button>
+                </div>
+              ) : filteredThreads.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-center">
                   <p className="text-sm font-medium text-slate-700">No conversations found</p>
                   <p className="mt-1 text-xs text-slate-500">Try a different search or filter.</p>
@@ -116,7 +234,6 @@ export default function MassegesPage() {
                     >
                       <div className="relative mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-sky-500 to-blue-600 text-sm font-semibold text-white">
                         {thread.name.charAt(0)}
-                        {thread.online && <span className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border border-white bg-emerald-500"></span>}
                       </div>
 
                       <div className="min-w-0 flex-1">
@@ -127,11 +244,6 @@ export default function MassegesPage() {
                         <div className="mt-0.5 flex items-center justify-between gap-2">
                           <p className="truncate text-xs text-slate-500">{thread.lastMessage}</p>
                           <div className="flex shrink-0 items-center gap-1">
-                            {thread.pinned && (
-                              <svg className="h-3.5 w-3.5 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7l8 8M7 8l9-3-3 9m-1 1l-4 4" />
-                              </svg>
-                            )}
                             {thread.unread > 0 && (
                               <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-blue-600 px-1.5 text-[11px] font-semibold text-white">
                                 {thread.unread}
@@ -159,7 +271,6 @@ export default function MassegesPage() {
                   <div className="flex items-center gap-3">
                     <div className="relative flex h-12 w-12 items-center justify-center rounded-full bg-gradient-to-br from-sky-500 to-blue-600 text-base font-semibold text-white">
                       {previewThread.name.charAt(0)}
-                      {previewThread.online && <span className="absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-white bg-emerald-500"></span>}
                     </div>
                     <div>
                       <p className="text-base font-semibold text-slate-900">{previewThread.name}</p>
@@ -179,7 +290,7 @@ export default function MassegesPage() {
                       </div>
                       <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
                         <p className="text-[11px] uppercase tracking-wide text-slate-500">Status</p>
-                        <p className="mt-1 text-sm font-semibold text-emerald-600">{previewThread.online ? "Online" : "Offline"}</p>
+                        <p className="mt-1 text-sm font-semibold text-slate-600">Presence later</p>
                       </div>
                     </div>
                   </div>
@@ -200,6 +311,41 @@ export default function MassegesPage() {
           </section>
         </div>
       </div>
+
+      {isNewChatOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <button
+            type="button"
+            aria-label="Close new chat modal"
+            className="absolute inset-0 bg-slate-900/50"
+            onClick={isCreatingChat ? undefined : () => setIsNewChatOpen(false)}
+          />
+          <div className="relative w-full max-w-md rounded-2xl border border-white/60 bg-white p-6 shadow-2xl">
+            <h2 className="text-lg font-semibold text-slate-900">Start New Conversation</h2>
+            <p className="mt-2 text-sm text-slate-600">Enter recipient email address to create or reopen a direct chat.</p>
+
+            <label className="mt-4 block text-sm font-medium text-slate-700">Recipient Email</label>
+            <input
+              type="email"
+              value={newChatEmail}
+              onChange={(event) => setNewChatEmail(event.target.value)}
+              placeholder="user@example.com"
+              className="mt-1.5 h-10 w-full rounded-md border border-slate-300 px-3 text-sm text-slate-900 shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+              disabled={isCreatingChat}
+            />
+            {newChatError && <p className="mt-2 text-xs text-rose-600">{newChatError}</p>}
+
+            <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <Button type="button" variant="outline" onClick={() => setIsNewChatOpen(false)} disabled={isCreatingChat}>
+                Cancel
+              </Button>
+              <Button type="button" onClick={() => void handleStartConversation()} loading={isCreatingChat} disabled={isCreatingChat}>
+                Start Chat
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </ProtectedShell>
   );
 }

@@ -1,0 +1,78 @@
+"use client";
+
+import Echo from "laravel-echo";
+import Pusher from "pusher-js";
+
+declare global {
+  interface Window {
+    Pusher: typeof Pusher;
+  }
+}
+
+let echoInstance: Echo<"reverb"> | null = null;
+
+const normalizeApiUrl = (): string => {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL;
+
+  if (!apiUrl) {
+    throw new Error("NEXT_PUBLIC_API_URL is not configured.");
+  }
+
+  return apiUrl.replace(/\/$/, "");
+};
+
+const toNumber = (value: string | undefined, fallback: number): number => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+export const getEcho = (): Echo<"reverb"> | null => {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  if (echoInstance) {
+    return echoInstance;
+  }
+
+  const apiUrl = normalizeApiUrl();
+  const key = process.env.NEXT_PUBLIC_REVERB_APP_KEY;
+  const wsHost = process.env.NEXT_PUBLIC_REVERB_HOST || window.location.hostname;
+  const scheme = process.env.NEXT_PUBLIC_REVERB_SCHEME || (window.location.protocol === "https:" ? "https" : "http");
+  const forceTLS = scheme === "https";
+  const wsPort = toNumber(process.env.NEXT_PUBLIC_REVERB_PORT, forceTLS ? 443 : 80);
+
+  if (!key) {
+    throw new Error("NEXT_PUBLIC_REVERB_APP_KEY is not configured.");
+  }
+
+  window.Pusher = Pusher;
+
+  echoInstance = new Echo<"reverb">({
+    broadcaster: "reverb",
+    key,
+    wsHost,
+    wsPort,
+    wssPort: wsPort,
+    forceTLS,
+    enabledTransports: ["ws", "wss"],
+    withCredentials: true,
+    authEndpoint: `${apiUrl}/broadcasting/auth`,
+    auth: {
+      headers: {
+        Accept: "application/json",
+      },
+    },
+  });
+
+  return echoInstance;
+};
+
+export const disconnectEcho = (): void => {
+  if (!echoInstance) {
+    return;
+  }
+
+  echoInstance.disconnect();
+  echoInstance = null;
+};
