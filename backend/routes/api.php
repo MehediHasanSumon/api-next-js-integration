@@ -1,6 +1,9 @@
 <?php
 
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\Chat\ConversationController;
+use App\Http\Controllers\Api\Chat\MessageController;
+use App\Http\Controllers\Api\Chat\TypingController;
 use App\Http\Controllers\Api\Admin\PermissionManagementController;
 use App\Http\Controllers\Api\Admin\RoleManagementController;
 use App\Http\Controllers\Api\Admin\UserManagementController;
@@ -33,5 +36,19 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/permissions/bulk-delete', [PermissionManagementController::class, 'bulkDestroy']);
         Route::put('/permissions/{permission}', [PermissionManagementController::class, 'update']);
         Route::delete('/permissions/{permission}', [PermissionManagementController::class, 'destroy']);
+    });
+
+    Route::prefix('chat')->group(function () {
+        Route::get('/conversations', [ConversationController::class, 'index']);
+        Route::get('/conversations/{conversation}', [ConversationController::class, 'show']);
+        Route::post('/conversations/{conversation}/request/respond', [ConversationController::class, 'respondToRequest']);
+        Route::post('/conversations/{conversation}/archive', [ConversationController::class, 'archive']);
+        Route::delete('/conversations/{conversation}/archive', [ConversationController::class, 'unarchive']);
+
+        Route::get('/conversations/{conversation}/messages', [MessageController::class, 'index']);
+        Route::post('/conversations/{conversation}/messages', [MessageController::class, 'store']);
+        Route::post('/conversations/{conversation}/messages/read', [MessageController::class, 'markRead']);
+
+        Route::post('/conversations/{conversation}/typing', [TypingController::class, 'update']);
     });
 });

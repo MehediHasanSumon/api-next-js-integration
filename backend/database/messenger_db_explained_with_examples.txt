@@ -1,0 +1,230 @@
+Messenger DB Explanation (with 3 real example users)
+=====================================================
+
+Goal:
+- 2/3 user diye bujhana je kon table er ki kaj
+- prottek important column er ki kaj
+- request/accept/decline + archive + attachment flow clear kora
+
+
+Example Users
+-------------
+1) Rahim (users.id = 11)
+2) Karim (users.id = 22)
+3) Nila  (users.id = 33)
+
+
+Scenario-1: Direct Chat (Rahim -> Nila)
+---------------------------------------
+Rahim Nila ke message dise. Nila ekhono accept kore nai.
+
+
+Table-1: conversations
+----------------------
+Kaj:
+- Eta ekta chat thread er master table.
+- Direct hole 2 jon er pair store hoy.
+- Group hole group info store hoy.
+
+Example row (direct):
+- id = 9001
+- type = 'direct'
+- created_by = 11 (Rahim)
+- direct_user_low_id = 11
+- direct_user_high_id = 33
+- title = NULL (direct chat e lagena)
+- last_message_id = 7001
+- last_message_at = 2026-03-05 17:10:00
+
+Column meaning:
+- id: conversation primary key
+- type: direct/group
+- created_by: conversation create korse ke
+- direct_user_low_id, direct_user_high_id:
+  direct pair unique rakhar jonno sorted user id
+- title/description/avatar_path:
+  group chat er display info
+- last_message_id/last_message_at:
+  inbox fast sort er jonno denormalized pointer
+- created_at/updated_at/deleted_at:
+  audit + soft-delete support
+
+
+Table-2: conversation_participants
+----------------------------------
+Kaj:
+- Conversation e kon user ache seta track kore.
+- Per-user state rakhe: pending/accepted/declined, archived, unread etc.
+
+Example rows for conversation_id = 9001:
+
+Row-A (sender Rahim):
+- conversation_id = 9001
+- user_id = 11
+- role = 'member'
+- participant_state = 'accepted'
+- accepted_at = 2026-03-05 17:09:55
+- archived_at = NULL
+- hidden_at = NULL
+- unread_count = 0
+
+Row-B (receiver Nila, request pending):
+- conversation_id = 9001
+- user_id = 33
+- role = 'member'
+- participant_state = 'pending'
+- accepted_at = NULL
+- declined_at = NULL
+- archived_at = NULL
+- hidden_at = NULL
+- unread_count = 1
+
+Important columns:
+- participant_state:
+  accepted = active inbox
+  pending  = request list e thakbe
+  declined = receiver side hidden
+  left/removed = group leave/remove
+- archived_at:
+  user nijer inbox theke archive koreche kina
+- hidden_at:
+  receiver decline korle visible na dekhate
+- last_read_message_id, last_read_at, unread_count:
+  unread badge + seen logic fast korte
+
+
+Table-3: messages
+-----------------
+Kaj:
+- Actual message content store kore.
+
+Example row:
+- id = 7001
+- conversation_id = 9001
+- sender_id = 11
+- message_type = 'text'
+- body = 'Hi Nila, tumi free?'
+- metadata = NULL
+- reply_to_message_id = NULL
+- client_uid = '2d64cb0d-2c70-4a8f-bc66-7a2cb3191d97'
+- edited_at = NULL
+- deleted_at = NULL
+- created_at = 2026-03-05 17:10:00
+
+Important columns:
+- message_type: text/image/file/voice/system
+- body: text message content (ba caption)
+- metadata: extra JSON (reaction, waveform, thumbnails etc)
+- reply_to_message_id: reply threading
+- client_uid: duplicate send avoid (retry safe)
+- edited_at/deleted_at: edit/delete feature support
+
+
+Table-4: message_attachments
+----------------------------
+Kaj:
+- image/file/voice er file info store kore.
+
+Example row (voice message):
+- id = 8801
+- message_id = 7002
+- uploader_id = 11
+- attachment_type = 'voice'
+- storage_disk = 'public'
+- storage_path = 'chat/9001/voice/2026/03/v_7002.m4a'
+- original_name = 'voice-note.m4a'
+- mime_type = 'audio/mp4'
+- extension = 'm4a'
+- size_bytes = 245672
+- duration_ms = 18300
+- checksum_sha256 = '...'
+
+Important columns:
+- message_id: kon message er attachment
+- attachment_type: image/file/voice
+- storage_path: file kothay ache
+- mime_type, size_bytes: validation + download header
+- duration_ms/width/height: media UI rendering
+- checksum_sha256: duplicate detect / integrity
+
+
+Table-5: message_receipts
+-------------------------
+Kaj:
+- delivered/seen tracking, especially group e.
+
+Example rows for message_id = 7001:
+- (7001, 33) status='delivered', delivered_at=17:10:01, seen_at=NULL
+- pore Nila open korle:
+  status='seen', seen_at=17:12:10
+
+Important columns:
+- message_id + user_id (composite PK):
+  ek user er ek message er single receipt row
+- status: delivered/seen
+- delivered_at, seen_at: timeline
+
+
+Scenario-2: Nila Decline kore (tomar rule)
+------------------------------------------
+Direct 9001 e Nila decline korle:
+
+conversation_participants row (user_id=33) update:
+- participant_state = 'declined'
+- declined_at = NOW()
+- hidden_at = NOW()
+
+Sender Rahim row change hoy na:
+- participant_state = 'accepted'
+- Rahim nijer sent history dekhte parbe
+
+Effect:
+- Nila side theke request/chat vanish
+- Rahim side e chat/history thakbe
+
+
+Scenario-3: Group Chat (Rahim + Karim + Nila)
+----------------------------------------------
+conversations row:
+- id = 9100
+- type = 'group'
+- created_by = 11
+- title = 'Team Alpha'
+- direct_user_low_id = NULL
+- direct_user_high_id = NULL
+
+conversation_participants rows:
+- (9100,11) role='owner',  participant_state='accepted'
+- (9100,22) role='member', participant_state='accepted'
+- (9100,33) role='member', participant_state='pending' (invite not accepted yet)
+
+Nila accept korle:
+- participant_state -> 'accepted'
+- accepted_at = NOW()
+
+
+Fast Query keno hobe (index summary)
+------------------------------------
+1) Inbox list fast:
+- idx_cp_user_inbox (user_id, participant_state, archived_at, hidden_at, updated_at DESC)
+- idx_conversations_last_message (last_message_at DESC, id DESC)
+
+2) Request list fast:
+- idx_cp_user_requests (user_id, participant_state, hidden_at, updated_at DESC)
+
+3) Message pagination fast:
+- idx_messages_conversation_id_desc (conversation_id, id DESC)
+- idx_messages_conversation_visible_desc (conversation_id, deleted_at, id DESC)
+
+4) Unread badge fast:
+- idx_cp_user_unread (user_id, unread_count DESC)
+
+
+Short Mapping: Feature -> Table
+-------------------------------
+- Chat list / inbox: conversations + conversation_participants + last_message
+- Request/accept/decline: conversation_participants.participant_state
+- Archive: conversation_participants.archived_at
+- Text/media message: messages + message_attachments
+- Seen status: message_receipts
+
