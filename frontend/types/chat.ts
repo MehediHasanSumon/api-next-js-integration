@@ -4,6 +4,8 @@ export type MessageId = number | string;
 export type ParticipantState = "pending" | "accepted" | "declined";
 export type MessageType = "text" | "image" | "file" | "voice" | "system";
 export type AttachmentType = "image" | "file" | "voice";
+export type MessageRemovalMode = "for_you" | "everywhere";
+export type MessageReactionAction = "added" | "removed";
 
 export type ConversationFilter = "inbox" | "requests" | "archived" | "all";
 export type RequestAction = "accept" | "decline";
@@ -57,6 +59,47 @@ export interface Attachment {
   updated_at: string;
 }
 
+export interface ReactionAggregate {
+  emoji: string;
+  count: number;
+  reacted_by_me: boolean;
+}
+
+export interface ForwardedSnapshotSender {
+  id: number;
+  name: string;
+  email: string;
+}
+
+export interface ForwardedSnapshotAttachment {
+  id: MessageId;
+  attachment_type: AttachmentType;
+  original_name: string | null;
+  mime_type: string | null;
+  size_bytes: number;
+  width: number | null;
+  height: number | null;
+  duration_ms: number | null;
+}
+
+export interface ForwardedSnapshot {
+  message_id: MessageId;
+  conversation_id: ConversationId;
+  sender: ForwardedSnapshotSender | null;
+  message_type: MessageType;
+  body: string | null;
+  created_at: string | null;
+  attachments: ForwardedSnapshotAttachment[];
+}
+
+export interface MessageDeletionState {
+  is_removed_for_everyone: boolean;
+  removed_for_everyone_by: number | null;
+  removed_for_everyone_at: string | null;
+  tombstone_text: string | null;
+  original_message_type: MessageType | null;
+}
+
 export interface MessageReply {
   id: MessageId;
   conversation_id: ConversationId;
@@ -65,6 +108,8 @@ export interface MessageReply {
   body: string | null;
   created_at: string;
   sender?: ChatUser;
+  reactions_total?: number;
+  reaction_aggregates?: ReactionAggregate[];
 }
 
 export interface Message {
@@ -75,14 +120,21 @@ export interface Message {
   body: string | null;
   metadata: Record<string, unknown> | null;
   reply_to_message_id: MessageId | null;
+  forwarded_from_message_id?: MessageId | null;
+  forwarded_from_user_id?: number | null;
+  forwarded_snapshot?: ForwardedSnapshot | null;
   client_uid: string | null;
   edited_at: string | null;
   deleted_at: string | null;
   created_at: string;
   updated_at: string;
   sender?: ChatUser;
+  forwarded_from_user?: ChatUser | null;
   attachments?: Attachment[];
   reply_to?: MessageReply | null;
+  reactions_total?: number;
+  reaction_aggregates?: ReactionAggregate[];
+  deletion_state?: MessageDeletionState | null;
 }
 
 export interface ConversationParticipant {
@@ -134,13 +186,7 @@ export interface ConversationListItem {
   archived_at: string | null;
   unread_count: number;
   counterpart: ChatUser | null;
-  last_message: {
-    id: MessageId;
-    message_type: MessageType;
-    body: string | null;
-    created_at: string;
-    sender: ChatUser | null;
-  } | null;
+  last_message: Message | null;
 }
 
 export interface ConversationShowResponse {
@@ -206,6 +252,58 @@ export interface SendMessagePayload {
 export interface SendMessageResponse {
   message: string;
   data: Message;
+}
+
+export interface ForwardMessagePayload {
+  target_conversation_id: ConversationId;
+  body?: string | null;
+  comment?: string | null;
+  metadata?: Record<string, unknown>;
+  client_uid?: string;
+}
+
+export interface ForwardMessageResponse {
+  message: string;
+  data: Message;
+}
+
+export interface ToggleMessageReactionPayload {
+  emoji: string;
+}
+
+export interface MessageReactionMutationData {
+  conversation_id: ConversationId;
+  message_id: MessageId;
+  emoji: string;
+  action: MessageReactionAction;
+  user_id: number;
+  reactions_total: number;
+  reaction_aggregates: ReactionAggregate[];
+}
+
+export interface MessageReactionMutationResponse {
+  message: string;
+  data: MessageReactionMutationData;
+}
+
+export interface MessageRemoveMutationData {
+  conversation_id: ConversationId;
+  message_id: MessageId;
+  mode: MessageRemovalMode;
+  actor_user_id: number;
+  removed_at: string;
+}
+
+export interface RemoveMessageForYouResponse {
+  message: string;
+  data: MessageRemoveMutationData;
+}
+
+export interface RemoveMessageForEverywhereResponse {
+  message: string;
+  data: MessageRemoveMutationData & {
+    message?: Message | null;
+  };
 }
 
 export interface MarkReadPayload {

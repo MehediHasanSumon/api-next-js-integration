@@ -8,15 +8,16 @@ use Illuminate\Contracts\Broadcasting\ShouldBroadcastNow;
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
 
-class MessageSent implements ShouldBroadcastNow
+class MessageRemovedEverywhere implements ShouldBroadcastNow
 {
     use Dispatchable, InteractsWithSockets, SerializesModels;
 
     public function __construct(
         public int $conversationId,
-        public array $message,
-        public string $eventType = 'sent',
-        public ?array $forwardMeta = null
+        public int $messageId,
+        public int $actorUserId,
+        public string $removedAt,
+        public array $message
     ) {}
 
     public function broadcastOn(): array
@@ -28,21 +29,18 @@ class MessageSent implements ShouldBroadcastNow
 
     public function broadcastAs(): string
     {
-        return 'chat.message.sent';
+        return 'chat.message.removed';
     }
 
     public function broadcastWith(): array
     {
-        $payload = [
+        return [
             'conversation_id' => $this->conversationId,
+            'message_id' => $this->messageId,
+            'mode' => 'everywhere',
+            'actor_user_id' => $this->actorUserId,
+            'removed_at' => $this->removedAt,
             'message' => $this->message,
-            'event_type' => $this->eventType,
         ];
-
-        if ($this->forwardMeta !== null) {
-            $payload['forward'] = $this->forwardMeta;
-        }
-
-        return $payload;
     }
 }

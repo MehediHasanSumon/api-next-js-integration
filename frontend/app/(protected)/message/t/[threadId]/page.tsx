@@ -8,11 +8,17 @@ import ProtectedShell from "@/components/ProtectedShell";
 import Button from "@/components/Button";
 import {
   archiveConversation,
+  forwardMessage,
+  listConversations,
   listMessages,
   markConversationRead,
+  removeMessageForEverywhere,
+  removeMessageForYou,
+  removeMessageReaction,
   respondToConversationRequest,
   sendMessage,
   showConversation,
+  toggleMessageReaction,
   updateTyping,
   unarchiveConversation,
 } from "@/lib/chat-api";
@@ -22,13 +28,21 @@ import { formatThreadRelativeTime, type ThreadItem } from "@/lib/chat-threads";
 import { getEcho } from "@/lib/echo";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { fetchInboxThreads, patchThread } from "@/store/chatSlice";
-import type { Conversation, ConversationShowResponse, Message } from "@/types/chat";
+import type {
+  Conversation,
+  ConversationListItem,
+  ConversationShowResponse,
+  Message,
+  MessageRemovalMode,
+  ReactionAggregate,
+} from "@/types/chat";
 
 type ThreadFilter = "all" | "unread" | "online";
 
 interface ChatMessageSentEvent {
   conversation_id: number | string;
   message: Message;
+  sent_at?: string;
 }
 
 interface ChatTypingEvent {
@@ -57,6 +71,26 @@ interface ChatUserPresenceUpdatedEvent {
   sent_at: string;
 }
 
+interface ChatMessageReactionUpdatedEvent {
+  conversation_id: number | string;
+  message_id: number | string;
+  emoji: string;
+  action: "added" | "removed";
+  user_id: number;
+  reactions_total: number;
+  reaction_aggregates: ReactionAggregate[];
+  sent_at?: string;
+}
+
+interface ChatMessageRemovedEvent {
+  conversation_id: number | string;
+  message_id: number | string;
+  mode: "for_you" | "everywhere";
+  actor_user_id: number;
+  removed_at: string;
+  message?: Message | null;
+}
+
 type EchoConnectionStatus = "connected" | "disconnected" | "connecting" | "reconnecting" | "failed";
 
 interface ApiValidationErrorPayload {
@@ -66,6 +100,136 @@ interface ApiValidationErrorPayload {
 
 const TYPING_IDLE_TIMEOUT_MS = 1500;
 const TYPING_TRUE_THROTTLE_MS = 800;
+const REMOVE_EVERYWHERE_WINDOW_MINUTES = 15;
+const REACTION_CHOICES = ["👍", "❤️", "😂", "🔥", "😮", "😢"] as const;
+
+const getMessagePreviewText = (message: Message): string => {
+  return message.body?.trim() || `[${message.message_type}]`;
+};
+
+const hasRemovedForEveryoneFlag = (message: Message): boolean => {
+  if (message.deletion_state?.is_removed_for_everyone) {
+    return true;
+  }
+
+  if (!message.metadata) {
+    return false;
+  }
+
+  return message.metadata.removed_for_everyone === true || message.metadata.removed_for_everyone === 1;
+};
+
+const patchMessageById = (
+  list: Message[],
+  targetMessageId: string,
+  updater: (message: Message) => Message
+): Message[] => {
+  let changed = false;
+  const next = list.map((item) => {
+    if (String(item.id) !== targetMessageId) {
+      return item;
+    }
+
+    changed = true;
+    return updater(item);
+  });
+
+  if (!changed) {
+    return list;
+  }
+
+  return sortMessagesAscending(next);
+};
+
+const applyOptimisticReactionMutation = (
+  message: Message,
+  emoji: string
+): { nextMessage: Message; action: "added" | "removed" } => {
+  const current = Array.isArray(message.reaction_aggregates) ? message.reaction_aggregates : [];
+  const normalizedEmoji = emoji.trim();
+  const existing = current.find((item) => item.emoji === normalizedEmoji);
+
+  let action: "added" | "removed" = "added";
+  let nextAggregates: ReactionAggregate[] = [];
+
+  if (existing?.reacted_by_me) {
+    action = "removed";
+    nextAggregates = current
+      .map((item) => {
+        if (item.emoji !== normalizedEmoji) {
+          return item;
+        }
+
+        const nextCount = Math.max(0, item.count - 1);
+        if (nextCount === 0) {
+          return null;
+        }
+
+        return {
+          ...item,
+          count: nextCount,
+          reacted_by_me: false,
+        };
+      })
+      .filter((item): item is ReactionAggregate => item !== null);
+  } else {
+    nextAggregates = current.map((item) => ({ ...item }));
+    const index = nextAggregates.findIndex((item) => item.emoji === normalizedEmoji);
+
+    if (index === -1) {
+      nextAggregates.push({
+        emoji: normalizedEmoji,
+        count: 1,
+        reacted_by_me: true,
+      });
+    } else {
+      nextAggregates[index] = {
+        ...nextAggregates[index],
+        count: nextAggregates[index].count + 1,
+        reacted_by_me: true,
+      };
+    }
+  }
+
+  nextAggregates.sort((a, b) => a.emoji.localeCompare(b.emoji));
+  const nextTotal = nextAggregates.reduce((sum, item) => sum + item.count, 0);
+
+  return {
+    action,
+    nextMessage: {
+      ...message,
+      reaction_aggregates: nextAggregates,
+      reactions_total: nextTotal,
+    },
+  };
+};
+
+const buildTombstoneMessage = (message: Message, actorUserId: number): Message => {
+  const previousMetadata = message.metadata && typeof message.metadata === "object" ? message.metadata : {};
+
+  return {
+    ...message,
+    message_type: "system",
+    body: "This message was removed.",
+    attachments: [],
+    metadata: {
+      ...previousMetadata,
+      removed_for_everyone: true,
+      removed_for_everyone_by: actorUserId,
+      removed_for_everyone_at: new Date().toISOString(),
+      tombstone_text: "This message was removed.",
+    },
+    deletion_state: {
+      is_removed_for_everyone: true,
+      removed_for_everyone_by: actorUserId,
+      removed_for_everyone_at: new Date().toISOString(),
+      tombstone_text: "This message was removed.",
+      original_message_type: message.message_type,
+    },
+    reaction_aggregates: [],
+    reactions_total: 0,
+  };
+};
 const formatFileSize = (size: number): string => {
   if (size < 1024) {
     return `${size} B`;
@@ -236,6 +400,21 @@ export default function MessageThreadPage() {
   const [archiveActionError, setArchiveActionError] = useState<string | null>(null);
   const [archiveActionLoading, setArchiveActionLoading] = useState(false);
   const [echoConnectionStatus, setEchoConnectionStatus] = useState<EchoConnectionStatus>("connecting");
+  const [messageActionError, setMessageActionError] = useState<string | null>(null);
+  const [messageActionMenuId, setMessageActionMenuId] = useState<string | null>(null);
+  const [reactionModalMessage, setReactionModalMessage] = useState<Message | null>(null);
+  const [reactionMutationLoadingKey, setReactionMutationLoadingKey] = useState<string | null>(null);
+  const [forwardModalMessage, setForwardModalMessage] = useState<Message | null>(null);
+  const [forwardModalConversationId, setForwardModalConversationId] = useState<string>("");
+  const [forwardModalComment, setForwardModalComment] = useState("");
+  const [forwardModalError, setForwardModalError] = useState<string | null>(null);
+  const [forwardModalLoading, setForwardModalLoading] = useState(false);
+  const [forwardTargets, setForwardTargets] = useState<ConversationListItem[]>([]);
+  const [forwardTargetsLoading, setForwardTargetsLoading] = useState(false);
+  const [removeModalMessage, setRemoveModalMessage] = useState<Message | null>(null);
+  const [removeModalMode, setRemoveModalMode] = useState<MessageRemovalMode>("for_you");
+  const [removeModalLoading, setRemoveModalLoading] = useState(false);
+  const [removeModalError, setRemoveModalError] = useState<string | null>(null);
 
   const messageViewportRef = useRef<HTMLDivElement | null>(null);
   const markReadInFlightRef = useRef(false);
@@ -250,6 +429,8 @@ export default function MessageThreadPage() {
   const typingForbiddenRef = useRef(false);
   const echoReconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const echoReconnectAttemptRef = useRef(0);
+  const processedRealtimeEventKeysRef = useRef<string[]>([]);
+  const processedRealtimeEventLookupRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     latestMessagesRef.current = messages;
@@ -279,6 +460,23 @@ export default function MessageThreadPage() {
     setArchiveActionError(null);
     setArchiveActionLoading(false);
     setEchoConnectionStatus("connecting");
+    setMessageActionError(null);
+    setMessageActionMenuId(null);
+    setReactionModalMessage(null);
+    setReactionMutationLoadingKey(null);
+    setForwardModalMessage(null);
+    setForwardModalConversationId("");
+    setForwardModalComment("");
+    setForwardModalError(null);
+    setForwardModalLoading(false);
+    setForwardTargets([]);
+    setForwardTargetsLoading(false);
+    setRemoveModalMessage(null);
+    setRemoveModalMode("for_you");
+    setRemoveModalError(null);
+    setRemoveModalLoading(false);
+    processedRealtimeEventLookupRef.current.clear();
+    processedRealtimeEventKeysRef.current = [];
   }, [threadId]);
 
   useEffect(() => {
@@ -470,6 +668,26 @@ export default function MessageThreadPage() {
     });
   }, [filter, searchQuery, threads]);
 
+  useEffect(() => {
+    if (!messageActionMenuId) {
+      return;
+    }
+
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("[data-message-actions-root]")) {
+        return;
+      }
+
+      setMessageActionMenuId(null);
+    };
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [messageActionMenuId]);
+
   const refreshThreads = useCallback(async () => {
     await dispatch(fetchInboxThreads());
   }, [dispatch]);
@@ -492,6 +710,90 @@ export default function MessageThreadPage() {
     const messageResponse = await listMessages(threadId, { limit: 100 });
     setMessages(sortMessagesAscending(messageResponse.data));
   }, [threadId]);
+
+  const rememberRealtimeEvent = useCallback((rawKey: string): boolean => {
+    if (!rawKey) {
+      return true;
+    }
+
+    if (processedRealtimeEventLookupRef.current.has(rawKey)) {
+      return false;
+    }
+
+    processedRealtimeEventLookupRef.current.add(rawKey);
+    processedRealtimeEventKeysRef.current.push(rawKey);
+
+    if (processedRealtimeEventKeysRef.current.length > 600) {
+      const expired = processedRealtimeEventKeysRef.current.shift();
+      if (expired) {
+        processedRealtimeEventLookupRef.current.delete(expired);
+      }
+    }
+
+    return true;
+  }, []);
+
+  const isCurrentUserAdmin = useMemo(() => {
+    return (currentUser?.roles ?? []).includes("admin");
+  }, [currentUser?.roles]);
+
+  const canRemoveEverywhereByPolicy = useCallback(
+    (message: Message): boolean => {
+      if (!currentUserId || participant?.participant_state !== "accepted" || participant.archived_at !== null) {
+        return false;
+      }
+
+      if (hasRemovedForEveryoneFlag(message)) {
+        return false;
+      }
+
+      if (message.message_type === "system" && !isCurrentUserAdmin) {
+        return false;
+      }
+
+      if (isCurrentUserAdmin) {
+        return true;
+      }
+
+      if (Number(message.sender_id) !== currentUserId) {
+        return false;
+      }
+
+      const createdAtMs = new Date(message.created_at).getTime();
+      if (!Number.isFinite(createdAtMs)) {
+        return false;
+      }
+
+      return Date.now() - createdAtMs <= REMOVE_EVERYWHERE_WINDOW_MINUTES * 60 * 1000;
+    },
+    [currentUserId, isCurrentUserAdmin, participant?.archived_at, participant?.participant_state]
+  );
+
+  const loadForwardTargets = useCallback(async () => {
+    setForwardTargetsLoading(true);
+    setForwardModalError(null);
+
+    try {
+      const response = await listConversations({ filter: "all", per_page: 100 });
+      const acceptedTargets = response.data.filter((item) => item.participant_state === "accepted");
+      setForwardTargets(acceptedTargets);
+
+      if (acceptedTargets.length === 0) {
+        setForwardModalConversationId("");
+      } else {
+        const currentIdInTargets = acceptedTargets.some((item) => String(item.conversation_id) === forwardModalConversationId);
+        if (!currentIdInTargets) {
+          setForwardModalConversationId(String(acceptedTargets[0].conversation_id));
+        }
+      }
+    } catch {
+      setForwardModalError("Failed to load conversation list.");
+      setForwardTargets([]);
+      setForwardModalConversationId("");
+    } finally {
+      setForwardTargetsLoading(false);
+    }
+  }, [forwardModalConversationId]);
 
   const refreshPresenceSnapshotForUserIds = useCallback(async (ids: number[]) => {
     const targetUserIds = Array.from(new Set(ids.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0)));
@@ -745,6 +1047,7 @@ export default function MessageThreadPage() {
     setEchoConnectionStatus(echo.connectionStatus());
 
     const channel = echo.private(`conversation.${threadId}`);
+    const userChannel = currentUserId ? echo.private(`user.${currentUserId}`) : null;
     const unsubscribeConnection = echo.connector.onConnectionChange((status) => {
       setEchoConnectionStatus(status);
 
@@ -754,6 +1057,10 @@ export default function MessageThreadPage() {
         resetLocalTypingRuntimeState();
         clearRemoteTypingIndicators();
         clearStaleOnlinePresenceFlags();
+        setMessageActionMenuId(null);
+        setReactionMutationLoadingKey(null);
+        setRemoveModalLoading(false);
+        setForwardModalLoading(false);
 
         void Promise.all([refreshConversation(), refreshThreads(), refreshMessages()])
           .then(async ([conversationResponse]) => {
@@ -774,6 +1081,11 @@ export default function MessageThreadPage() {
         return;
       }
 
+      const dedupeKey = `message.sent:${threadId}:${String(payload.message.id)}:${payload.message.client_uid ?? ""}:${payload.sent_at ?? ""}`;
+      if (!rememberRealtimeEvent(dedupeKey)) {
+        return;
+      }
+
       setMessages((previous) => upsertMessageByIdentity(previous, payload.message));
       dispatch(
         patchThread({
@@ -782,6 +1094,52 @@ export default function MessageThreadPage() {
             lastMessage: payload.message.body?.trim() || `[${payload.message.message_type}]`,
             lastTime: "now",
           },
+        })
+      );
+    });
+
+    channel.listen(".chat.message.reaction.updated", (payload: ChatMessageReactionUpdatedEvent) => {
+      if (String(payload.conversation_id) !== threadId) {
+        return;
+      }
+
+      const dedupeKey = `message.reaction.updated:${threadId}:${String(payload.message_id)}:${payload.emoji}:${payload.action}:${payload.user_id}:${payload.sent_at ?? ""}`;
+      if (!rememberRealtimeEvent(dedupeKey)) {
+        return;
+      }
+
+      setMessages((previous) =>
+        patchMessageById(previous, String(payload.message_id), (message) => ({
+          ...message,
+          reaction_aggregates: payload.reaction_aggregates ?? [],
+          reactions_total: payload.reactions_total,
+        }))
+      );
+    });
+
+    channel.listen(".chat.message.removed", (payload: ChatMessageRemovedEvent) => {
+      if (payload.mode !== "everywhere" || String(payload.conversation_id) !== threadId) {
+        return;
+      }
+
+      const dedupeKey = `message.removed:everywhere:${threadId}:${String(payload.message_id)}:${payload.removed_at}`;
+      if (!rememberRealtimeEvent(dedupeKey)) {
+        return;
+      }
+
+      setMessages((previous) =>
+        patchMessageById(previous, String(payload.message_id), (message) => {
+          if (payload.message) {
+            return {
+              ...message,
+              ...payload.message,
+              attachments: payload.message.attachments ?? [],
+              reaction_aggregates: payload.message.reaction_aggregates ?? [],
+              reactions_total: payload.message.reactions_total ?? 0,
+            };
+          }
+
+          return buildTombstoneMessage(message, payload.actor_user_id);
         })
       );
     });
@@ -849,6 +1207,21 @@ export default function MessageThreadPage() {
       });
     });
 
+    if (userChannel) {
+      userChannel.listen(".chat.message.removed", (payload: ChatMessageRemovedEvent) => {
+        if (payload.mode !== "for_you" || String(payload.conversation_id) !== threadId) {
+          return;
+        }
+
+        const dedupeKey = `message.removed:for_you:${threadId}:${String(payload.message_id)}:${payload.removed_at}`;
+        if (!rememberRealtimeEvent(dedupeKey)) {
+          return;
+        }
+
+        setMessages((previous) => previous.filter((message) => String(message.id) !== String(payload.message_id)));
+      });
+    }
+
     return () => {
       clearRemoteTypingIndicators();
       setPresenceByUserId({});
@@ -856,12 +1229,16 @@ export default function MessageThreadPage() {
       unsubscribeConnection();
       clearReconnectTimer();
       echo.leave(`conversation.${threadId}`);
+      if (currentUserId) {
+        echo.leave(`user.${currentUserId}`);
+      }
     };
   }, [
     clearRemoteTypingIndicators,
     clearStaleOnlinePresenceFlags,
     currentUserId,
     dispatch,
+    rememberRealtimeEvent,
     refreshConversation,
     refreshMessages,
     refreshPresenceSnapshotForUserIds,
@@ -1183,10 +1560,205 @@ export default function MessageThreadPage() {
     }
   };
 
+  const openReactionModal = (message: Message) => {
+    setMessageActionMenuId(null);
+    setMessageActionError(null);
+    setReactionModalMessage(message);
+  };
+
+  const openForwardModal = (message: Message) => {
+    setMessageActionMenuId(null);
+    setMessageActionError(null);
+    setForwardModalMessage(message);
+    setForwardModalComment("");
+    setForwardModalError(null);
+    void loadForwardTargets();
+  };
+
+  const openRemoveModal = (message: Message) => {
+    setMessageActionMenuId(null);
+    setMessageActionError(null);
+    setRemoveModalMessage(message);
+    setRemoveModalMode("for_you");
+    setRemoveModalError(null);
+  };
+
+  const closeReactionModal = () => {
+    setReactionModalMessage(null);
+    setReactionMutationLoadingKey(null);
+  };
+
+  const closeForwardModal = () => {
+    setForwardModalMessage(null);
+    setForwardModalLoading(false);
+    setForwardModalError(null);
+    setForwardModalComment("");
+  };
+
+  const closeRemoveModal = () => {
+    setRemoveModalMessage(null);
+    setRemoveModalLoading(false);
+    setRemoveModalError(null);
+    setRemoveModalMode("for_you");
+  };
+
+  const handleReactionToggle = async (emoji: string) => {
+    if (!reactionModalMessage || !threadId || !currentUserId) {
+      return;
+    }
+
+    const targetMessageId = String(reactionModalMessage.id);
+    const latestMessage = latestMessagesRef.current.find((message) => String(message.id) === targetMessageId);
+    if (!latestMessage) {
+      closeReactionModal();
+      return;
+    }
+
+    const rollbackSnapshot = { ...latestMessage };
+    const optimistic = applyOptimisticReactionMutation(latestMessage, emoji);
+    const loadingKey = `${targetMessageId}:${emoji}`;
+
+    setReactionMutationLoadingKey(loadingKey);
+    setMessageActionError(null);
+
+    setMessages((previous) => patchMessageById(previous, targetMessageId, () => optimistic.nextMessage));
+
+    try {
+      const response =
+        optimistic.action === "removed"
+          ? await removeMessageReaction(latestMessage.id, { emoji })
+          : await toggleMessageReaction(latestMessage.id, { emoji });
+
+      setMessages((previous) =>
+        patchMessageById(previous, targetMessageId, (message) => ({
+          ...message,
+          reaction_aggregates: response.data.reaction_aggregates,
+          reactions_total: response.data.reactions_total,
+        }))
+      );
+
+      closeReactionModal();
+    } catch {
+      setMessages((previous) => patchMessageById(previous, targetMessageId, () => rollbackSnapshot));
+      setMessageActionError("Failed to update reaction.");
+    } finally {
+      setReactionMutationLoadingKey((previous) => (previous === loadingKey ? null : previous));
+    }
+  };
+
+  const handleForwardSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (!forwardModalMessage || !forwardModalConversationId) {
+      setForwardModalError("Please choose a conversation.");
+      return;
+    }
+
+    setForwardModalLoading(true);
+    setForwardModalError(null);
+
+    try {
+      const response = await forwardMessage(forwardModalMessage.id, {
+        target_conversation_id: forwardModalConversationId,
+        body: forwardModalComment.trim() === "" ? undefined : forwardModalComment.trim(),
+      });
+
+      if (String(response.data.conversation_id) === threadId) {
+        setMessages((previous) => upsertMessageByIdentity(previous, response.data));
+        dispatch(
+          patchThread({
+            id: threadId,
+            changes: {
+              lastMessage: getMessagePreviewText(response.data),
+              lastTime: "now",
+            },
+          })
+        );
+      }
+
+      closeForwardModal();
+      await refreshThreads();
+    } catch (error) {
+      const axiosError = error as AxiosError<ApiValidationErrorPayload>;
+      if (axiosError.response?.status === 403) {
+        setForwardModalError("You can only forward to accepted conversations.");
+      } else if (axiosError.response?.status === 422) {
+        const firstValidationError = Object.values(axiosError.response?.data?.errors ?? {})[0]?.[0];
+        setForwardModalError(firstValidationError || "Invalid forward request payload.");
+      } else if (!axiosError.response) {
+        setForwardModalError("Network error while forwarding message.");
+      } else {
+        setForwardModalError("Failed to forward message.");
+      }
+    } finally {
+      setForwardModalLoading(false);
+    }
+  };
+
+  const handleRemoveSubmit = async () => {
+    if (!removeModalMessage || !threadId) {
+      return;
+    }
+
+    const targetMessageId = String(removeModalMessage.id);
+    const latestMessage = latestMessagesRef.current.find((message) => String(message.id) === targetMessageId);
+    if (!latestMessage) {
+      closeRemoveModal();
+      return;
+    }
+
+    setRemoveModalLoading(true);
+    setRemoveModalError(null);
+
+    if (removeModalMode === "for_you") {
+      setMessages((previous) => previous.filter((message) => String(message.id) !== targetMessageId));
+
+      try {
+        await removeMessageForYou(latestMessage.id);
+        closeRemoveModal();
+        await refreshThreads();
+      } catch {
+        setMessages((previous) => sortMessagesAscending([...previous, latestMessage]));
+        setRemoveModalError("Failed to remove this message for you.");
+      } finally {
+        setRemoveModalLoading(false);
+      }
+
+      return;
+    }
+
+    const rollbackSnapshot = { ...latestMessage };
+    const optimisticTombstone = buildTombstoneMessage(latestMessage, currentUserId ?? 0);
+    setMessages((previous) => patchMessageById(previous, targetMessageId, () => optimisticTombstone));
+
+    try {
+      const response = await removeMessageForEverywhere(latestMessage.id);
+
+      if (response.data.message) {
+        setMessages((previous) => patchMessageById(previous, targetMessageId, () => response.data.message as Message));
+      }
+
+      closeRemoveModal();
+      await refreshThreads();
+    } catch (error) {
+      setMessages((previous) => patchMessageById(previous, targetMessageId, () => rollbackSnapshot));
+
+      const axiosError = error as AxiosError<ApiValidationErrorPayload>;
+      if (axiosError.response?.status === 403) {
+        setRemoveModalError("You are not allowed to remove this message for everyone.");
+      } else {
+        setRemoveModalError("Failed to remove message for everyone.");
+      }
+    } finally {
+      setRemoveModalLoading(false);
+    }
+  };
+
   const isPendingThread = participant?.participant_state === "pending";
   const isDeclinedThread = participant?.participant_state === "declined";
   const isArchivedThread = participant?.archived_at !== null;
   const canSendMessage = participant?.participant_state === "accepted";
+  const removeModalCanEverywhere = removeModalMessage ? canRemoveEverywhereByPolicy(removeModalMessage) : false;
 
   return (
     <ProtectedShell
@@ -1367,6 +1939,14 @@ export default function MessageThreadPage() {
                     messages.map((message) => {
                       const isMine = currentUserId !== null && Number(message.sender_id) === currentUserId;
                       const isOptimistic = String(message.id).startsWith("temp-");
+                      const messageIdKey = String(message.id);
+                      const isRemovedForEveryone = hasRemovedForEveryoneFlag(message);
+                      const canUseMessageActions = participant?.participant_state === "accepted" && participant.archived_at === null && !isOptimistic;
+                      const canReactMessage = canUseMessageActions && !isRemovedForEveryone;
+                      const canForwardMessage = canUseMessageActions && !isRemovedForEveryone;
+                      const canRemoveForYou = !isOptimistic;
+                      const canRemoveEverywhere = canRemoveEverywhereByPolicy(message);
+                      const hasAnyAction = canForwardMessage || canReactMessage || canRemoveForYou || canRemoveEverywhere;
                       const messageText =
                         message.body?.trim() ||
                         (message.attachments && message.attachments.length > 0
@@ -1374,50 +1954,137 @@ export default function MessageThreadPage() {
                           : `[${message.message_type}]`);
 
                       return (
-                        <div key={String(message.id)} className={`flex ${isMine ? "justify-end" : "justify-start"}`}>
-                          <div
-                            className={`max-w-[82%] rounded-2xl px-3 py-2 ${
-                              isMine
-                                ? "rounded-br-md bg-blue-600 text-white"
-                                : "rounded-bl-md border border-slate-200 bg-white text-slate-800"
-                            }`}
-                          >
-                            <p className="text-sm leading-relaxed">{messageText}</p>
+                        <div key={messageIdKey} className={`group relative flex ${isMine ? "justify-end" : "justify-start"}`}>
+                          <div className="relative max-w-[82%]">
+                            {hasAnyAction && (
+                              <div
+                                className={`absolute top-1 z-20 ${isMine ? "left-0 -translate-x-full pr-2" : "right-0 translate-x-full pl-2"}`}
+                                data-message-actions-root
+                              >
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-7 w-7 border border-slate-200 bg-white text-slate-600 shadow-sm opacity-100 transition md:opacity-0 md:group-hover:opacity-100"
+                                  onClick={() => setMessageActionMenuId((previous) => (previous === messageIdKey ? null : messageIdKey))}
+                                  aria-label="Message actions"
+                                >
+                                  <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 5h.01M12 12h.01M12 19h.01" />
+                                  </svg>
+                                </Button>
 
-                            {message.attachments && message.attachments.length > 0 && (
-                              <div className="mt-2 space-y-1.5">
-                                {message.attachments.map((attachment) => {
-                                  const attachmentName = attachment.original_name || attachment.storage_path.split("/").pop() || "Attachment";
-
-                                  return (
-                                    <div
-                                      key={String(attachment.id)}
-                                      className={`flex items-center gap-2 rounded-lg px-2 py-1 ${isMine ? "bg-blue-500/30" : "bg-slate-100"}`}
-                                    >
-                                      <span className={`inline-flex h-5 w-5 items-center justify-center rounded ${isMine ? "bg-blue-400/50 text-white" : "bg-white text-slate-600"}`}>
-                                        {attachment.attachment_type === "image" ? (
-                                          <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-8h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                                          </svg>
-                                        ) : (
-                                          <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14.752 11.168l-6.518 6.518a4 4 0 105.657 5.657l7.07-7.071a6 6 0 10-8.485-8.485l-7.07 7.071a8 8 0 1011.314 11.314l6.518-6.518" />
-                                          </svg>
-                                        )}
-                                      </span>
-                                      <div className="min-w-0">
-                                        <p className={`truncate text-xs font-medium ${isMine ? "text-white" : "text-slate-700"}`}>{attachmentName}</p>
-                                        <p className={`text-[11px] ${isMine ? "text-blue-100" : "text-slate-500"}`}>{formatFileSize(attachment.size_bytes)}</p>
-                                      </div>
-                                    </div>
-                                  );
-                                })}
+                                {messageActionMenuId === messageIdKey && (
+                                  <div className={`mt-1 w-44 rounded-lg border border-slate-200 bg-white p-1 shadow-lg ${isMine ? "origin-top-right" : "origin-top-left"}`}>
+                                    {canForwardMessage && (
+                                      <button
+                                        type="button"
+                                        className="w-full rounded-md px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-100"
+                                        onClick={() => openForwardModal(message)}
+                                      >
+                                        Forward
+                                      </button>
+                                    )}
+                                    {canReactMessage && (
+                                      <button
+                                        type="button"
+                                        className="w-full rounded-md px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-100"
+                                        onClick={() => openReactionModal(message)}
+                                      >
+                                        React
+                                      </button>
+                                    )}
+                                    {(canRemoveForYou || canRemoveEverywhere) && (
+                                      <button
+                                        type="button"
+                                        className="w-full rounded-md px-3 py-2 text-left text-xs font-medium text-rose-600 hover:bg-rose-50"
+                                        onClick={() => openRemoveModal(message)}
+                                      >
+                                        Remove
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
                               </div>
                             )}
 
-                            <p className={`mt-1 text-[11px] ${isMine ? "text-blue-100" : "text-slate-500"}`}>
-                              {isOptimistic ? "Sending..." : formatClockTime(message.created_at)}
-                            </p>
+                            <div
+                              className={`rounded-2xl px-3 py-2 ${
+                                isMine
+                                  ? "rounded-br-md bg-blue-600 text-white"
+                                  : "rounded-bl-md border border-slate-200 bg-white text-slate-800"
+                              }`}
+                            >
+                              {(message.forwarded_from_message_id || message.forwarded_snapshot) && (
+                                <p className={`mb-1 text-[11px] font-medium ${isMine ? "text-blue-100" : "text-slate-500"}`}>Forwarded</p>
+                              )}
+
+                              <p className={`text-sm leading-relaxed ${isRemovedForEveryone ? "italic opacity-85" : ""}`}>{messageText}</p>
+
+                              {message.attachments && message.attachments.length > 0 && (
+                                <div className="mt-2 space-y-1.5">
+                                  {message.attachments.map((attachment) => {
+                                    const attachmentName = attachment.original_name || attachment.storage_path.split("/").pop() || "Attachment";
+
+                                    return (
+                                      <div
+                                        key={String(attachment.id)}
+                                        className={`flex items-center gap-2 rounded-lg px-2 py-1 ${isMine ? "bg-blue-500/30" : "bg-slate-100"}`}
+                                      >
+                                        <span className={`inline-flex h-5 w-5 items-center justify-center rounded ${isMine ? "bg-blue-400/50 text-white" : "bg-white text-slate-600"}`}>
+                                          {attachment.attachment_type === "image" ? (
+                                            <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-8h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                                            </svg>
+                                          ) : (
+                                            <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14.752 11.168l-6.518 6.518a4 4 0 105.657 5.657l7.07-7.071a6 6 0 10-8.485-8.485l-7.07 7.071a8 8 0 1011.314 11.314l6.518-6.518" />
+                                            </svg>
+                                          )}
+                                        </span>
+                                        <div className="min-w-0">
+                                          <p className={`truncate text-xs font-medium ${isMine ? "text-white" : "text-slate-700"}`}>{attachmentName}</p>
+                                          <p className={`text-[11px] ${isMine ? "text-blue-100" : "text-slate-500"}`}>{formatFileSize(attachment.size_bytes)}</p>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+
+                              {Array.isArray(message.reaction_aggregates) && message.reaction_aggregates.length > 0 && (
+                                <div className={`mt-2 flex flex-wrap gap-1 ${isMine ? "justify-end" : "justify-start"}`}>
+                                  {message.reaction_aggregates.map((aggregate) => (
+                                    <button
+                                      key={`${messageIdKey}-${aggregate.emoji}`}
+                                      type="button"
+                                      onClick={() => {
+                                        if (!canReactMessage) {
+                                          return;
+                                        }
+                                        openReactionModal(message);
+                                      }}
+                                      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] ${
+                                        aggregate.reacted_by_me
+                                          ? isMine
+                                            ? "border-blue-200 bg-blue-500/30 text-white"
+                                            : "border-blue-200 bg-blue-50 text-blue-700"
+                                          : isMine
+                                            ? "border-blue-300/60 bg-blue-500/20 text-blue-100"
+                                            : "border-slate-200 bg-slate-100 text-slate-700"
+                                      }`}
+                                    >
+                                      <span>{aggregate.emoji}</span>
+                                      <span>{aggregate.count}</span>
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+
+                              <p className={`mt-1 text-[11px] ${isMine ? "text-blue-100" : "text-slate-500"}`}>
+                                {isOptimistic ? "Sending..." : formatClockTime(message.created_at)}
+                              </p>
+                            </div>
                           </div>
                         </div>
                       );
@@ -1429,6 +2096,7 @@ export default function MessageThreadPage() {
 
             <form onSubmit={handleSend} className="border-t border-slate-200/80 bg-white px-4 py-3">
               {sendError && <p className="mb-2 text-xs text-rose-600">{sendError}</p>}
+              {messageActionError && <p className="mb-2 text-xs text-rose-600">{messageActionError}</p>}
               {requestActionError && <p className="mb-2 text-xs text-rose-600">{requestActionError}</p>}
               {archiveActionError && <p className="mb-2 text-xs text-rose-600">{archiveActionError}</p>}
               {isArchivedThread && <p className="mb-2 text-xs text-slate-500">This conversation is archived.</p>}
@@ -1534,6 +2202,185 @@ export default function MessageThreadPage() {
           </aside>
         </div>
       </div>
+
+      {reactionModalMessage && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <button
+            type="button"
+            className="absolute inset-0 bg-slate-900/50"
+            aria-label="Close reaction modal"
+            onClick={reactionMutationLoadingKey ? undefined : closeReactionModal}
+          />
+          <div className="relative w-full max-w-md rounded-2xl border border-white/60 bg-white p-5 shadow-2xl">
+            <h2 className="text-base font-semibold text-slate-900">React to Message</h2>
+            <p className="mt-2 rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-600">
+              {reactionModalMessage.body?.trim() || `[${reactionModalMessage.message_type}]`}
+            </p>
+
+            <div className="mt-4 grid grid-cols-3 gap-2">
+              {REACTION_CHOICES.map((emoji) => {
+                const loading = reactionMutationLoadingKey === `${String(reactionModalMessage.id)}:${emoji}`;
+
+                return (
+                  <Button
+                    key={emoji}
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-10 text-lg"
+                    disabled={Boolean(reactionMutationLoadingKey)}
+                    loading={loading}
+                    onClick={() => void handleReactionToggle(emoji)}
+                  >
+                    {emoji}
+                  </Button>
+                );
+              })}
+            </div>
+
+            <div className="mt-5 flex justify-end">
+              <Button type="button" variant="ghost" size="sm" onClick={closeReactionModal} disabled={Boolean(reactionMutationLoadingKey)}>
+                Close
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {forwardModalMessage && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <button
+            type="button"
+            className="absolute inset-0 bg-slate-900/50"
+            aria-label="Close forward modal"
+            onClick={forwardModalLoading ? undefined : closeForwardModal}
+          />
+
+          <form onSubmit={handleForwardSubmit} className="relative w-full max-w-lg rounded-2xl border border-white/60 bg-white p-5 shadow-2xl">
+            <h2 className="text-base font-semibold text-slate-900">Forward Message</h2>
+            <p className="mt-2 rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-600">
+              {forwardModalMessage.body?.trim() || `[${forwardModalMessage.message_type}]`}
+            </p>
+
+            <label className="mt-4 block text-xs font-semibold uppercase tracking-wide text-slate-500">Conversation</label>
+            <select
+              value={forwardModalConversationId}
+              onChange={(event) => setForwardModalConversationId(event.target.value)}
+              disabled={forwardTargetsLoading || forwardModalLoading}
+              className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-200"
+            >
+              {forwardTargets.length === 0 ? (
+                <option value="">{forwardTargetsLoading ? "Loading..." : "No accepted conversation found"}</option>
+              ) : (
+                forwardTargets.map((target) => {
+                  const label =
+                    target.title?.trim() ||
+                    target.counterpart?.name?.trim() ||
+                    target.counterpart?.email ||
+                    `Conversation #${target.conversation_id}`;
+
+                  return (
+                    <option key={String(target.conversation_id)} value={String(target.conversation_id)}>
+                      {label}
+                    </option>
+                  );
+                })
+              )}
+            </select>
+
+            <label className="mt-4 block text-xs font-semibold uppercase tracking-wide text-slate-500">Comment (optional)</label>
+            <textarea
+              value={forwardModalComment}
+              onChange={(event) => setForwardModalComment(event.target.value)}
+              placeholder="Add a note"
+              rows={3}
+              disabled={forwardModalLoading}
+              className="mt-1 w-full resize-none rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-200"
+            />
+
+            {forwardModalError && <p className="mt-2 text-xs text-rose-600">{forwardModalError}</p>}
+
+            <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <Button type="button" variant="outline" onClick={closeForwardModal} disabled={forwardModalLoading}>
+                Cancel
+              </Button>
+              <Button type="submit" loading={forwardModalLoading} disabled={forwardModalLoading || !forwardModalConversationId}>
+                Forward
+              </Button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {removeModalMessage && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <button
+            type="button"
+            className="absolute inset-0 bg-slate-900/50"
+            aria-label="Close remove modal"
+            onClick={removeModalLoading ? undefined : closeRemoveModal}
+          />
+          <div className="relative w-full max-w-md rounded-2xl border border-white/60 bg-white p-5 shadow-2xl">
+            <h2 className="text-base font-semibold text-slate-900">Remove Message</h2>
+            <p className="mt-2 rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-600">
+              {removeModalMessage.body?.trim() || `[${removeModalMessage.message_type}]`}
+            </p>
+
+            <div className="mt-4 space-y-2">
+              <label className="flex cursor-pointer items-start gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-700">
+                <input
+                  type="radio"
+                  name="remove-mode"
+                  value="for_you"
+                  checked={removeModalMode === "for_you"}
+                  onChange={() => setRemoveModalMode("for_you")}
+                  disabled={removeModalLoading}
+                  className="mt-0.5"
+                />
+                <span>
+                  <strong>Remove for you</strong>
+                  <span className="block text-xs text-slate-500">Hide this message only from your view.</span>
+                </span>
+              </label>
+
+              {removeModalCanEverywhere && (
+                <label className="flex cursor-pointer items-start gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-700">
+                  <input
+                    type="radio"
+                    name="remove-mode"
+                    value="everywhere"
+                    checked={removeModalMode === "everywhere"}
+                    onChange={() => setRemoveModalMode("everywhere")}
+                    disabled={removeModalLoading}
+                    className="mt-0.5"
+                  />
+                  <span>
+                    <strong>Remove from everywhere</strong>
+                    <span className="block text-xs text-slate-500">Replace message with a tombstone for all participants.</span>
+                  </span>
+                </label>
+              )}
+            </div>
+
+            {removeModalError && <p className="mt-2 text-xs text-rose-600">{removeModalError}</p>}
+
+            <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <Button type="button" variant="outline" onClick={closeRemoveModal} disabled={removeModalLoading}>
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                variant="danger"
+                onClick={() => void handleRemoveSubmit()}
+                loading={removeModalLoading}
+                disabled={removeModalLoading}
+              >
+                Remove
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </ProtectedShell>
   );
 }

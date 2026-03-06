@@ -8,8 +8,10 @@ use App\Http\Requests\Chat\ConversationRequestActionRequest;
 use App\Http\Requests\Chat\StartConversationRequest;
 use App\Models\Conversation;
 use App\Models\ConversationParticipant;
+use App\Models\Message;
 use App\Models\User;
 use App\Services\Chat\ConversationAccessService;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
@@ -116,8 +118,6 @@ class ConversationController extends Controller
             ->where('user_id', $user->id)
             ->with([
                 'conversation:id,type,title,description,avatar_path,last_message_id,last_message_at,updated_at',
-                'conversation.lastMessage:id,conversation_id,sender_id,message_type,body,created_at',
-                'conversation.lastMessage.sender:id,name,email',
                 'conversation.participants:id,conversation_id,user_id',
                 'conversation.participants.user:id,name,email,last_seen_at',
             ]);
@@ -142,11 +142,19 @@ class ConversationController extends Controller
             ->withQueryString();
 
         $viewerId = (int) $user->id;
+        $conversationIds = $paginator->getCollection()
+            ->pluck('conversation_id')
+            ->filter()
+            ->map(fn ($id) => (int) $id)
+            ->values()
+            ->all();
+
+        $lastVisibleMessages = $this->resolveLastVisibleMessages($conversationIds, $viewerId);
 
         $paginator->setCollection(
-            $paginator->getCollection()->map(function (ConversationParticipant $participant) use ($viewerId) {
+            $paginator->getCollection()->map(function (ConversationParticipant $participant) use ($viewerId, $lastVisibleMessages) {
                 $conversation = $participant->conversation;
-                $lastMessage = $conversation?->lastMessage;
+                $lastMessage = $lastVisibleMessages->get((int) $participant->conversation_id);
                 $counterpart = $conversation?->participants
                     ?->first(fn (ConversationParticipant $item) => (int) $item->user_id !== $viewerId)
                     ?->user;
@@ -157,7 +165,7 @@ class ConversationController extends Controller
                     'title' => $conversation?->title,
                     'description' => $conversation?->description,
                     'avatar_path' => $conversation?->avatar_path,
-                    'last_message_at' => $conversation?->last_message_at,
+                    'last_message_at' => $lastMessage?->created_at,
                     'participant_state' => $participant->participant_state,
                     'archived_at' => $participant->archived_at,
                     'unread_count' => $participant->unread_count,
@@ -166,17 +174,7 @@ class ConversationController extends Controller
                         'name' => $counterpart->name,
                         'email' => $counterpart->email,
                     ] : null,
-                    'last_message' => $lastMessage ? [
-                        'id' => $lastMessage->id,
-                        'message_type' => $lastMessage->message_type,
-                        'body' => $lastMessage->body,
-                        'created_at' => $lastMessage->created_at,
-                        'sender' => $lastMessage->sender ? [
-                            'id' => $lastMessage->sender->id,
-                            'name' => $lastMessage->sender->name,
-                            'email' => $lastMessage->sender->email,
-                        ] : null,
-                    ] : null,
+                    'last_message' => $this->serializeLastMessage($lastMessage),
                 ];
             })
         );
@@ -187,13 +185,16 @@ class ConversationController extends Controller
     public function show(Request $request, Conversation $conversation, ConversationAccessService $accessService): JsonResponse
     {
         $participant = $accessService->requireVisibleParticipant($conversation, $request->user());
+        $viewerUserId = (int) $request->user()->id;
 
         $conversation->load([
             'creator:id,name,email',
-            'lastMessage:id,conversation_id,sender_id,message_type,body,created_at',
-            'lastMessage.sender:id,name,email',
             'participants.user:id,name,email,last_seen_at',
         ]);
+
+        $lastMessage = $this->resolveLastVisibleMessages([(int) $conversation->id], $viewerUserId)->get((int) $conversation->id);
+        $conversation->setRelation('lastMessage', $lastMessage);
+        $conversation->last_message_at = $lastMessage?->created_at;
 
         return response()->json([
             'conversation' => $conversation,
@@ -268,5 +269,77 @@ class ConversationController extends Controller
             'message' => 'Conversation unarchived successfully.',
             'conversation_id' => $conversation->id,
         ]);
+    }
+
+    private function formatReactionAggregates($reactionAggregates): array
+    {
+        if (!$reactionAggregates) {
+            return [];
+        }
+
+        return collect($reactionAggregates)
+            ->map(function ($item): array {
+                return [
+                    'emoji' => (string) $item->emoji,
+                    'count' => (int) ($item->total ?? 0),
+                    'reacted_by_me' => (bool) ($item->reacted_by_me ?? 0),
+                ];
+            })
+            ->values()
+            ->all();
+    }
+
+    private function resolveLastVisibleMessages(array $conversationIds, int $viewerUserId)
+    {
+        $normalizedConversationIds = collect($conversationIds)
+            ->map(fn ($id) => (int) $id)
+            ->filter(fn (int $id) => $id > 0)
+            ->unique()
+            ->values()
+            ->all();
+
+        if ($normalizedConversationIds === []) {
+            return collect();
+        }
+
+        $latestVisibleIdsByConversation = Message::query()
+            ->whereIn('conversation_id', $normalizedConversationIds)
+            ->visibleToUser($viewerUserId)
+            ->selectRaw('MAX(id) as id, conversation_id')
+            ->groupBy('conversation_id')
+            ->pluck('id', 'conversation_id');
+
+        if ($latestVisibleIdsByConversation->isEmpty()) {
+            return collect();
+        }
+
+        return Message::query()
+            ->whereIn('id', $latestVisibleIdsByConversation->values()->all())
+            ->visibleToUser($viewerUserId)
+            ->withActiveReactionAggregates($viewerUserId)
+            ->with('sender:id,name,email')
+            ->get()
+            ->keyBy('conversation_id');
+    }
+
+    private function serializeLastMessage(?Message $lastMessage): ?array
+    {
+        if (!$lastMessage) {
+            return null;
+        }
+
+        return [
+            'id' => $lastMessage->id,
+            'message_type' => $lastMessage->message_type,
+            'body' => $lastMessage->body,
+            'created_at' => $lastMessage->created_at,
+            'reactions_total' => (int) ($lastMessage->reactions_total ?? 0),
+            'reaction_aggregates' => $this->formatReactionAggregates($lastMessage->reactionAggregates),
+            'sender' => $lastMessage->sender ? [
+                'id' => $lastMessage->sender->id,
+                'name' => $lastMessage->sender->name,
+                'email' => $lastMessage->sender->email,
+            ] : null,
+        ];
     }
 }

@@ -16,6 +16,7 @@ class MessageReceipt extends Model
         'status',
         'delivered_at',
         'seen_at',
+        'hidden_at',
     ];
 
     protected function casts(): array
@@ -23,6 +24,7 @@ class MessageReceipt extends Model
         return [
             'delivered_at' => 'datetime',
             'seen_at' => 'datetime',
+            'hidden_at' => 'datetime',
         ];
     }
 

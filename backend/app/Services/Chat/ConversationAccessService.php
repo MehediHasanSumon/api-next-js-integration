@@ -14,7 +14,7 @@ class ConversationAccessService
         $participant = $this->participantOrFail($conversation, $user);
 
         if ($participant->hidden_at !== null) {
-            throw new AuthorizationException('Conversation is not accessible.');
+            throw new AuthorizationException('Conversation is hidden or not accessible.');
         }
 
         return $participant;
@@ -24,8 +24,20 @@ class ConversationAccessService
     {
         $participant = $this->requireVisibleParticipant($conversation, $user);
 
+        if ($participant->archived_at !== null) {
+            throw new AuthorizationException('Conversation is archived. Unarchive it before this action.');
+        }
+
+        if ($participant->participant_state === 'pending') {
+            throw new AuthorizationException('Conversation request is pending. Accept it before this action.');
+        }
+
+        if ($participant->participant_state === 'declined') {
+            throw new AuthorizationException('Conversation request is declined and cannot be used for this action.');
+        }
+
         if ($participant->participant_state !== 'accepted') {
-            throw new AuthorizationException('Conversation is not accepted yet.');
+            throw new AuthorizationException('You are not allowed to perform this action in this conversation.');
         }
 
         return $participant;

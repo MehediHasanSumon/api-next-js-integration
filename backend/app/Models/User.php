@@ -81,4 +81,9 @@ class User extends Authenticatable
     {
         return $this->hasMany(MessageReceipt::class);
     }
+
+    public function messageReactions(): HasMany
+    {
+        return $this->hasMany(MessageReaction::class);
+    }
 }

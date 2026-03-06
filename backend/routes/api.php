@@ -52,6 +52,11 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/conversations/{conversation}/messages', [MessageController::class, 'index']);
         Route::post('/conversations/{conversation}/messages', [MessageController::class, 'store']);
         Route::post('/conversations/{conversation}/messages/read', [MessageController::class, 'markRead']);
+        Route::post('/messages/{message}/forward', [MessageController::class, 'forward']);
+        Route::post('/messages/{message}/reactions', [MessageController::class, 'toggleReaction']);
+        Route::delete('/messages/{message}/reactions', [MessageController::class, 'removeReaction']);
+        Route::post('/messages/{message}/remove-for-you', [MessageController::class, 'removeForYou']);
+        Route::post('/messages/{message}/remove-for-everywhere', [MessageController::class, 'removeForEverywhere']);
 
         Route::post('/conversations/{conversation}/typing', [TypingController::class, 'update']);
     });

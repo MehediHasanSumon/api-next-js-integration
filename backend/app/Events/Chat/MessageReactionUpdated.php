@@ -8,15 +8,18 @@ use Illuminate\Contracts\Broadcasting\ShouldBroadcastNow;
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
 
-class MessageSent implements ShouldBroadcastNow
+class MessageReactionUpdated implements ShouldBroadcastNow
 {
     use Dispatchable, InteractsWithSockets, SerializesModels;
 
     public function __construct(
         public int $conversationId,
-        public array $message,
-        public string $eventType = 'sent',
-        public ?array $forwardMeta = null
+        public int $messageId,
+        public string $emoji,
+        public string $action,
+        public int $userId,
+        public int $reactionsTotal,
+        public array $reactionAggregates
     ) {}
 
     public function broadcastOn(): array
@@ -28,21 +31,20 @@ class MessageSent implements ShouldBroadcastNow
 
     public function broadcastAs(): string
     {
-        return 'chat.message.sent';
+        return 'chat.message.reaction.updated';
     }
 
     public function broadcastWith(): array
     {
-        $payload = [
+        return [
             'conversation_id' => $this->conversationId,
-            'message' => $this->message,
-            'event_type' => $this->eventType,
+            'message_id' => $this->messageId,
+            'emoji' => $this->emoji,
+            'action' => $this->action,
+            'user_id' => $this->userId,
+            'reactions_total' => $this->reactionsTotal,
+            'reaction_aggregates' => $this->reactionAggregates,
+            'sent_at' => now()->toISOString(),
         ];
-
-        if ($this->forwardMeta !== null) {
-            $payload['forward'] = $this->forwardMeta;
-        }
-
-        return $payload;
     }
 }
