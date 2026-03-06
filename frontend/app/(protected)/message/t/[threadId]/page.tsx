@@ -57,6 +57,8 @@ interface ApiValidationErrorPayload {
 
 const TYPING_IDLE_TIMEOUT_MS = 1500;
 const TYPING_TRUE_THROTTLE_MS = 800;
+// Presence contract: Typing > Online > Last seen.
+const PRESENCE_ONLINE_WINDOW_MS = 90 * 1000;
 
 const formatFileSize = (size: number): string => {
   if (size < 1024) {
@@ -105,6 +107,36 @@ const formatClockTime = (rawDate: string): string => {
   }
 
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+};
+
+const formatLastSeenText = (rawDate: string | null | undefined): string | null => {
+  if (!rawDate) {
+    return null;
+  }
+
+  const date = new Date(rawDate);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  const diffMs = Math.max(0, Date.now() - date.getTime());
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+
+  if (diffMs < minute) {
+    return "1 min ago";
+  }
+
+  if (diffMs < hour) {
+    return `${Math.floor(diffMs / minute)} min ago`;
+  }
+
+  if (diffMs < day) {
+    return `${Math.floor(diffMs / hour)} hr ago`;
+  }
+
+  return date.toLocaleDateString();
 };
 
 const mapConversationDetailToThread = (
@@ -341,6 +373,33 @@ export default function MessageThreadPage() {
 
     return `${typingUserNames[0]}, ${typingUserNames[1]} and ${typingUserNames.length - 2} others are typing...`;
   }, [typingUserNames]);
+
+  const presenceSubtitle = useMemo(() => {
+    if (typingIndicatorText) {
+      return typingIndicatorText;
+    }
+
+    const counterpartLastSeenAt = counterpart?.last_seen_at ?? null;
+
+    if (counterpartLastSeenAt) {
+      const counterpartLastSeenTs = new Date(counterpartLastSeenAt).getTime();
+      if (Number.isFinite(counterpartLastSeenTs)) {
+        const diffMs = Math.max(0, Date.now() - counterpartLastSeenTs);
+        if (diffMs <= PRESENCE_ONLINE_WINDOW_MS) {
+          return "Online";
+        }
+      }
+
+      const lastSeenText = formatLastSeenText(counterpartLastSeenAt);
+      if (lastSeenText) {
+        return lastSeenText;
+      }
+    }
+
+    return counterpart?.email ? `@${counterpart.email.split("@")[0]}` : activeThread?.handle ?? "-";
+  }, [activeThread?.handle, counterpart?.email, counterpart?.last_seen_at, typingIndicatorText]);
+
+  const presenceSubtitleClassName = typingIndicatorText || presenceSubtitle === "Online" ? "text-emerald-600" : "text-slate-500";
 
   const unreadCount = useMemo(() => threads.reduce((sum, thread) => sum + thread.unread, 0), [threads]);
   const onlineCount = 0;
@@ -1074,8 +1133,8 @@ export default function MessageThreadPage() {
                 </div>
                 <div>
                   <p className="text-sm font-semibold text-slate-900">{activeThread?.name ?? "Conversation"}</p>
-                  <p className={`text-xs ${typingIndicatorText ? "text-emerald-600" : "text-slate-500"}`}>
-                    {typingIndicatorText || (counterpart?.email ? `@${counterpart.email.split("@")[0]}` : activeThread?.handle ?? "-")}
+                  <p className={`text-xs ${presenceSubtitleClassName}`}>
+                    {presenceSubtitle}
                   </p>
                 </div>
               </div>

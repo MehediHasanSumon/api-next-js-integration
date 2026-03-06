@@ -34,6 +34,7 @@ export interface ChatUser {
   id: number;
   name: string;
   email: string;
+  last_seen_at?: string | null;
 }
 
 export interface Attachment {
