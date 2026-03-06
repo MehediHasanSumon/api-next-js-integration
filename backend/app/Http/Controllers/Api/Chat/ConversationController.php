@@ -119,7 +119,7 @@ class ConversationController extends Controller
                 'conversation.lastMessage:id,conversation_id,sender_id,message_type,body,created_at',
                 'conversation.lastMessage.sender:id,name,email',
                 'conversation.participants:id,conversation_id,user_id',
-                'conversation.participants.user:id,name,email',
+                'conversation.participants.user:id,name,email,last_seen_at',
             ]);
 
         if ($filter === 'inbox') {
@@ -192,7 +192,7 @@ class ConversationController extends Controller
             'creator:id,name,email',
             'lastMessage:id,conversation_id,sender_id,message_type,body,created_at',
             'lastMessage.sender:id,name,email',
-            'participants.user:id,name,email',
+            'participants.user:id,name,email,last_seen_at',
         ]);
 
         return response()->json([

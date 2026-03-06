@@ -16,6 +16,8 @@ import {
   updateTyping,
   unarchiveConversation,
 } from "@/lib/chat-api";
+import { getPresenceStatus, pingPresence } from "@/lib/presence-api";
+import { formatLastSeen, getNowFromServerOffset, resolveServerClockOffsetMs } from "@/lib/presence-time";
 import { formatThreadRelativeTime, type ThreadItem } from "@/lib/chat-threads";
 import { getEcho } from "@/lib/echo";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
@@ -48,6 +50,13 @@ interface ChatRequestUpdatedEvent {
   action: "accept" | "decline";
 }
 
+interface ChatUserPresenceUpdatedEvent {
+  user_id: number;
+  is_online: boolean;
+  last_seen_at: string | null;
+  sent_at: string;
+}
+
 type EchoConnectionStatus = "connected" | "disconnected" | "connecting" | "reconnecting" | "failed";
 
 interface ApiValidationErrorPayload {
@@ -57,9 +66,6 @@ interface ApiValidationErrorPayload {
 
 const TYPING_IDLE_TIMEOUT_MS = 1500;
 const TYPING_TRUE_THROTTLE_MS = 800;
-// Presence contract: Typing > Online > Last seen.
-const PRESENCE_ONLINE_WINDOW_MS = 90 * 1000;
-
 const formatFileSize = (size: number): string => {
   if (size < 1024) {
     return `${size} B`;
@@ -107,36 +113,6 @@ const formatClockTime = (rawDate: string): string => {
   }
 
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-};
-
-const formatLastSeenText = (rawDate: string | null | undefined): string | null => {
-  if (!rawDate) {
-    return null;
-  }
-
-  const date = new Date(rawDate);
-  if (Number.isNaN(date.getTime())) {
-    return null;
-  }
-
-  const diffMs = Math.max(0, Date.now() - date.getTime());
-  const minute = 60 * 1000;
-  const hour = 60 * minute;
-  const day = 24 * hour;
-
-  if (diffMs < minute) {
-    return "1 min ago";
-  }
-
-  if (diffMs < hour) {
-    return `${Math.floor(diffMs / minute)} min ago`;
-  }
-
-  if (diffMs < day) {
-    return `${Math.floor(diffMs / hour)} hr ago`;
-  }
-
-  return date.toLocaleDateString();
 };
 
 const mapConversationDetailToThread = (
@@ -247,6 +223,8 @@ export default function MessageThreadPage() {
   const [conversationData, setConversationData] = useState<ConversationShowResponse | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [typingUserIds, setTypingUserIds] = useState<number[]>([]);
+  const [presenceByUserId, setPresenceByUserId] = useState<Record<number, { isOnline: boolean; lastSeenAt: string | null }>>({});
+  const [serverClockOffsetMs, setServerClockOffsetMs] = useState<number | null>(null);
   const [lastReadEvent, setLastReadEvent] = useState<ChatReadEvent | null>(null);
 
   const [isLoading, setIsLoading] = useState(true);
@@ -281,6 +259,8 @@ export default function MessageThreadPage() {
     lastMarkedMessageIdRef.current = null;
     markReadInFlightRef.current = false;
     setTypingUserIds([]);
+    setPresenceByUserId({});
+    setServerClockOffsetMs(null);
     setLastReadEvent(null);
     localTypingStateRef.current = false;
     lastSentTypingStateRef.current = null;
@@ -299,6 +279,21 @@ export default function MessageThreadPage() {
     setArchiveActionError(null);
     setArchiveActionLoading(false);
     setEchoConnectionStatus("connecting");
+  }, [threadId]);
+
+  useEffect(() => {
+    if (!threadId) {
+      return;
+    }
+
+    void pingPresence()
+      .then((response) => {
+        const offset = resolveServerClockOffsetMs(response.server_time);
+        if (offset !== null) {
+          setServerClockOffsetMs(offset);
+        }
+      })
+      .catch(() => undefined);
   }, [threadId]);
 
   const activeThread = useMemo(() => {
@@ -332,6 +327,21 @@ export default function MessageThreadPage() {
 
     const other = conversation.participants.find((item) => item.user_id !== currentUserId && item.user);
     return other?.user ?? null;
+  }, [conversation?.participants, currentUserId]);
+
+  const otherParticipants = useMemo(() => {
+    if (!conversation?.participants || currentUserId === null) {
+      return [];
+    }
+
+    return conversation.participants
+      .filter((item) => item.user && item.user_id !== currentUserId)
+      .map((item) => ({
+        id: item.user_id,
+        name: item.user?.name ?? "User",
+        email: item.user?.email ?? "",
+        lastSeenAt: item.user?.last_seen_at ?? null,
+      }));
   }, [conversation?.participants, currentUserId]);
 
   const typingUserNames = useMemo(() => {
@@ -379,27 +389,57 @@ export default function MessageThreadPage() {
       return typingIndicatorText;
     }
 
-    const counterpartLastSeenAt = counterpart?.last_seen_at ?? null;
+    const nowForPresence = getNowFromServerOffset(serverClockOffsetMs);
+    const onlineParticipantCount = otherParticipants.reduce((count, participantInfo) => {
+      const participantPresence = presenceByUserId[participantInfo.id];
+      const participantLastSeenAt = participantPresence?.lastSeenAt ?? participantInfo.lastSeenAt;
+      const participantLastSeenText = formatLastSeen(participantLastSeenAt, nowForPresence);
+      const isOnline = participantPresence?.isOnline || participantLastSeenText === "Online";
+      return isOnline ? count + 1 : count;
+    }, 0);
 
-    if (counterpartLastSeenAt) {
-      const counterpartLastSeenTs = new Date(counterpartLastSeenAt).getTime();
-      if (Number.isFinite(counterpartLastSeenTs)) {
-        const diffMs = Math.max(0, Date.now() - counterpartLastSeenTs);
-        if (diffMs <= PRESENCE_ONLINE_WINDOW_MS) {
-          return "Online";
-        }
+    if (onlineParticipantCount > 0) {
+      if (otherParticipants.length > 1 && onlineParticipantCount > 1) {
+        return `${onlineParticipantCount} online`;
+      }
+      return "Online";
+    }
+
+    const latestLastSeenAt = otherParticipants.reduce<string | null>((latest, participantInfo) => {
+      const participantPresence = presenceByUserId[participantInfo.id];
+      const candidate = participantPresence?.lastSeenAt ?? participantInfo.lastSeenAt;
+      if (!candidate) {
+        return latest;
       }
 
-      const lastSeenText = formatLastSeenText(counterpartLastSeenAt);
-      if (lastSeenText) {
-        return lastSeenText;
+      if (!latest) {
+        return candidate;
       }
+
+      const candidateTs = new Date(candidate).getTime();
+      const latestTs = new Date(latest).getTime();
+
+      if (!Number.isFinite(candidateTs)) {
+        return latest;
+      }
+
+      if (!Number.isFinite(latestTs) || candidateTs > latestTs) {
+        return candidate;
+      }
+
+      return latest;
+    }, null);
+
+    const lastSeenText = formatLastSeen(latestLastSeenAt, nowForPresence);
+    if (lastSeenText) {
+      return lastSeenText;
     }
 
     return counterpart?.email ? `@${counterpart.email.split("@")[0]}` : activeThread?.handle ?? "-";
-  }, [activeThread?.handle, counterpart?.email, counterpart?.last_seen_at, typingIndicatorText]);
+  }, [activeThread?.handle, counterpart?.email, otherParticipants, presenceByUserId, serverClockOffsetMs, typingIndicatorText]);
 
-  const presenceSubtitleClassName = typingIndicatorText || presenceSubtitle === "Online" ? "text-emerald-600" : "text-slate-500";
+  const presenceSubtitleClassName =
+    typingIndicatorText || presenceSubtitle.toLowerCase().includes("online") ? "text-emerald-600" : "text-slate-500";
 
   const unreadCount = useMemo(() => threads.reduce((sum, thread) => sum + thread.unread, 0), [threads]);
   const onlineCount = 0;
@@ -434,13 +474,14 @@ export default function MessageThreadPage() {
     await dispatch(fetchInboxThreads());
   }, [dispatch]);
 
-  const refreshConversation = useCallback(async () => {
+  const refreshConversation = useCallback(async (): Promise<ConversationShowResponse | null> => {
     if (!threadId) {
-      return;
+      return null;
     }
 
     const conversationResponse = await showConversation(threadId);
     setConversationData(conversationResponse);
+    return conversationResponse;
   }, [threadId]);
 
   const refreshMessages = useCallback(async () => {
@@ -451,6 +492,52 @@ export default function MessageThreadPage() {
     const messageResponse = await listMessages(threadId, { limit: 100 });
     setMessages(sortMessagesAscending(messageResponse.data));
   }, [threadId]);
+
+  const refreshPresenceSnapshotForUserIds = useCallback(async (ids: number[]) => {
+    const targetUserIds = Array.from(new Set(ids.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0)));
+
+    if (targetUserIds.length === 0) {
+      return;
+    }
+
+    const response = await getPresenceStatus(targetUserIds);
+    const offset = resolveServerClockOffsetMs(response.server_time);
+    if (offset !== null) {
+      setServerClockOffsetMs(offset);
+    }
+
+    setPresenceByUserId((previous) => {
+      let changed = false;
+      const next = { ...previous };
+
+      response.data.forEach((item) => {
+        const current = next[item.user_id];
+        const candidate = {
+          isOnline: item.is_online,
+          lastSeenAt: item.last_seen_at,
+        };
+
+        if (!current || current.isOnline !== candidate.isOnline || current.lastSeenAt !== candidate.lastSeenAt) {
+          next[item.user_id] = candidate;
+          changed = true;
+        }
+      });
+
+      return changed ? next : previous;
+    });
+  }, []);
+
+  const refreshPresenceSnapshot = useCallback(async () => {
+    await refreshPresenceSnapshotForUserIds(otherParticipants.map((item) => item.id));
+  }, [otherParticipants, refreshPresenceSnapshotForUserIds]);
+
+  useEffect(() => {
+    if (otherParticipants.length === 0) {
+      return;
+    }
+
+    void refreshPresenceSnapshot().catch(() => undefined);
+  }, [otherParticipants, refreshPresenceSnapshot, threadId]);
 
   const markThreadRead = useCallback(async (targetMessageId?: number) => {
     if (!threadId) {
@@ -522,6 +609,8 @@ export default function MessageThreadPage() {
         }
 
         setConversationData(conversationResponse);
+        const participantIds = conversationResponse.conversation.participants?.map((item) => Number(item.user_id)) ?? [];
+        void refreshPresenceSnapshotForUserIds(participantIds).catch(() => undefined);
         await refreshThreads();
       } catch {
         if (!isCancelled) {
@@ -541,7 +630,7 @@ export default function MessageThreadPage() {
     return () => {
       isCancelled = true;
     };
-  }, [refreshMessages, refreshThreads, threadId]);
+  }, [refreshMessages, refreshPresenceSnapshotForUserIds, refreshThreads, threadId]);
 
   useEffect(() => {
     if (!messageViewportRef.current) {
@@ -578,6 +667,32 @@ export default function MessageThreadPage() {
     Object.values(typingTimeoutsRef.current).forEach((timeoutId) => clearTimeout(timeoutId));
     typingTimeoutsRef.current = {};
     setTypingUserIds([]);
+  }, []);
+
+  const clearStaleOnlinePresenceFlags = useCallback(() => {
+    setPresenceByUserId((previous) => {
+      const entries = Object.entries(previous);
+      if (entries.length === 0) {
+        return previous;
+      }
+
+      let changed = false;
+      const next: Record<number, { isOnline: boolean; lastSeenAt: string | null }> = {};
+
+      entries.forEach(([userIdKey, presence]) => {
+        const userId = Number(userIdKey);
+        if (presence.isOnline) {
+          changed = true;
+        }
+
+        next[userId] = {
+          isOnline: false,
+          lastSeenAt: presence.lastSeenAt,
+        };
+      });
+
+      return changed ? next : previous;
+    });
   }, []);
 
   const resetLocalTypingRuntimeState = useCallback(() => {
@@ -638,8 +753,14 @@ export default function MessageThreadPage() {
         clearReconnectTimer();
         resetLocalTypingRuntimeState();
         clearRemoteTypingIndicators();
+        clearStaleOnlinePresenceFlags();
 
-        void Promise.all([refreshConversation(), refreshThreads(), refreshMessages()]).catch(() => undefined);
+        void Promise.all([refreshConversation(), refreshThreads(), refreshMessages()])
+          .then(async ([conversationResponse]) => {
+            const participantIds = conversationResponse?.conversation.participants?.map((item) => Number(item.user_id)) ?? [];
+            await refreshPresenceSnapshotForUserIds(participantIds);
+          })
+          .catch(() => undefined);
         return;
       }
 
@@ -706,14 +827,48 @@ export default function MessageThreadPage() {
       void refreshConversation().catch(() => undefined);
     });
 
+    channel.listen(".chat.user.presence.updated", (payload: ChatUserPresenceUpdatedEvent) => {
+      const offset = resolveServerClockOffsetMs(payload.sent_at);
+      if (offset !== null) {
+        setServerClockOffsetMs(offset);
+      }
+
+      setPresenceByUserId((previous) => {
+        const current = previous[payload.user_id];
+        if (current && current.isOnline === payload.is_online && current.lastSeenAt === payload.last_seen_at) {
+          return previous;
+        }
+
+        return {
+          ...previous,
+          [payload.user_id]: {
+            isOnline: payload.is_online,
+            lastSeenAt: payload.last_seen_at,
+          },
+        };
+      });
+    });
+
     return () => {
       clearRemoteTypingIndicators();
+      setPresenceByUserId({});
       resetLocalTypingRuntimeState();
       unsubscribeConnection();
       clearReconnectTimer();
       echo.leave(`conversation.${threadId}`);
     };
-  }, [clearRemoteTypingIndicators, currentUserId, dispatch, refreshConversation, refreshMessages, refreshThreads, resetLocalTypingRuntimeState, threadId]);
+  }, [
+    clearRemoteTypingIndicators,
+    clearStaleOnlinePresenceFlags,
+    currentUserId,
+    dispatch,
+    refreshConversation,
+    refreshMessages,
+    refreshPresenceSnapshotForUserIds,
+    refreshThreads,
+    resetLocalTypingRuntimeState,
+    threadId,
+  ]);
 
   const handleMessageScroll = () => {
     const viewport = messageViewportRef.current;

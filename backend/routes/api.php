@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\PresenceController;
 use App\Http\Controllers\Api\Chat\ConversationController;
 use App\Http\Controllers\Api\Chat\MessageController;
 use App\Http\Controllers\Api\Chat\TypingController;
@@ -17,6 +18,8 @@ Route::post('/reset-password', [AuthController::class, 'resetPassword'])->middle
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('/user', [AuthController::class, 'user']);
     Route::post('/logout', [AuthController::class, 'logout']);
+    Route::post('/presence/ping', [PresenceController::class, 'ping']);
+    Route::get('/presence/status', [PresenceController::class, 'status']);
 
     Route::prefix('admin')->group(function () {
         Route::get('/users', [UserManagementController::class, 'index']);
