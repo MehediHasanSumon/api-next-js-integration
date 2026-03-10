@@ -354,8 +354,12 @@ class ChatMessagingService
             throw new AuthorizationException('Only the message sender can edit this message.');
         }
 
-        if ($message->message_type === 'system') {
-            throw new AuthorizationException('System messages cannot be edited.');
+        if ($message->message_type !== 'text') {
+            throw new AuthorizationException('Only text messages can be edited.');
+        }
+
+        if ($message->attachments && $message->attachments->isNotEmpty()) {
+            throw new AuthorizationException('Messages with attachments cannot be edited.');
         }
 
         $windowStart = now()->subMinutes(self::EDIT_WINDOW_MINUTES);

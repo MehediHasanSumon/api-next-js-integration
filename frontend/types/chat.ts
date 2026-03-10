@@ -263,6 +263,11 @@ export interface UpdateMessageResponse {
   data: Message;
 }
 
+export interface UploadAttachmentResponse {
+  message: string;
+  data: AttachmentPayload;
+}
+
 export interface ForwardMessagePayload {
   target_conversation_id: ConversationId;
   body?: string | null;

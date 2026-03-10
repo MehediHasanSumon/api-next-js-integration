@@ -30,6 +30,7 @@ import type {
   SendMessageResponse,
   UpdateMessagePayload,
   UpdateMessageResponse,
+  UploadAttachmentResponse,
   StartConversationPayload,
   StartConversationResponse,
   ToggleMessageReactionPayload,
@@ -75,6 +76,7 @@ export type {
   SendMessageResponse,
   UpdateMessagePayload,
   UpdateMessageResponse,
+  UploadAttachmentResponse,
   StartConversationPayload,
   StartConversationResponse,
   ToggleMessageReactionPayload,
@@ -491,6 +493,23 @@ export const updateMessage = async (
   return normalizeMessageResponse(data);
 };
 
+export const uploadChatAttachment = async (
+  conversationId: ConversationId,
+  file: File
+): Promise<UploadAttachmentResponse> => {
+  const formData = new FormData();
+  formData.append("conversation_id", String(conversationId));
+  formData.append("file", file);
+
+  const { data } = await api.post<UploadAttachmentResponse>("/chat/attachments", formData, {
+    headers: {
+      "Content-Type": "multipart/form-data",
+    },
+  });
+
+  return data;
+};
+
 export const forwardMessage = async (
   messageId: MessageId,
   payload: ForwardMessagePayload
@@ -594,6 +613,7 @@ const chatApi = {
   listMessages,
   sendMessage,
   updateMessage,
+  uploadChatAttachment,
   forwardMessage,
   toggleMessageReaction,
   removeMessageReaction,

@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\PresenceController;
+use App\Http\Controllers\Api\Chat\AttachmentController;
 use App\Http\Controllers\Api\Chat\ConversationController;
 use App\Http\Controllers\Api\Chat\MessageController;
 use App\Http\Controllers\Api\Chat\TypingController;
@@ -42,6 +43,7 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     Route::prefix('chat')->group(function () {
+        Route::post('/attachments', [AttachmentController::class, 'store']);
         Route::post('/conversations', [ConversationController::class, 'store']);
         Route::get('/conversations', [ConversationController::class, 'index']);
         Route::get('/conversations/{conversation}', [ConversationController::class, 'show']);

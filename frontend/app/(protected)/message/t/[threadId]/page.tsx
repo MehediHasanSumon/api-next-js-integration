@@ -18,6 +18,7 @@ import {
   respondToConversationRequest,
   sendMessage,
   updateMessage,
+  uploadChatAttachment,
   showConversation,
   toggleMessageReaction,
   updateTyping,
@@ -30,15 +31,28 @@ import { getEcho } from "@/lib/echo";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { fetchInboxThreads, patchThread } from "@/store/chatSlice";
 import type {
+  Attachment,
   Conversation,
   ConversationListItem,
   ConversationShowResponse,
+  AttachmentPayload,
   Message,
   MessageRemovalMode,
   ReactionAggregate,
 } from "@/types/chat";
 
 type ThreadFilter = "all" | "unread" | "online";
+
+type DraftAttachmentStatus = "uploading" | "ready" | "error";
+
+interface DraftAttachmentItem {
+  id: string;
+  file: File;
+  previewUrl: string | null;
+  status: DraftAttachmentStatus;
+  error: string | null;
+  payload: AttachmentPayload | null;
+}
 
 interface ChatMessageSentEvent {
   conversation_id: number | string;
@@ -249,6 +263,54 @@ const formatFileSize = (size: number): string => {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 };
 
+const resolveAttachmentUrl = (attachment: Attachment | AttachmentPayload): string | null => {
+  if (!attachment.storage_path) {
+    return null;
+  }
+
+  if (attachment.storage_disk && attachment.storage_disk !== "public") {
+    return null;
+  }
+
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL;
+  if (!apiUrl) {
+    return null;
+  }
+
+  const baseUrl = apiUrl.replace(/\/api\/?$/, "");
+  const normalizedPath = attachment.storage_path.replace(/^public\//, "").replace(/^\/+/, "");
+
+  return `${baseUrl}/storage/${normalizedPath}`;
+};
+
+const mapAttachmentPayloadToAttachment = (
+  payload: AttachmentPayload,
+  messageId: string,
+  fallbackUserId: number | null
+): Attachment => {
+  const createdAt = new Date().toISOString();
+
+  return {
+    id: `temp-${messageId}-${payload.storage_path}`,
+    message_id: messageId,
+    uploader_id: fallbackUserId,
+    attachment_type: payload.attachment_type,
+    storage_disk: payload.storage_disk ?? "public",
+    storage_path: payload.storage_path,
+    original_name: payload.original_name ?? null,
+    mime_type: payload.mime_type,
+    extension: payload.extension ?? null,
+    size_bytes: payload.size_bytes,
+    width: payload.width ?? null,
+    height: payload.height ?? null,
+    duration_ms: payload.duration_ms ?? null,
+    checksum_sha256: payload.checksum_sha256 ?? null,
+    metadata: payload.metadata ?? null,
+    created_at: createdAt,
+    updated_at: createdAt,
+  };
+};
+
 const formatRelativeTime = (rawDate: string | null): string => {
   if (!rawDate) {
     return "-";
@@ -428,6 +490,8 @@ export default function MessageThreadPage() {
   const [editingDraft, setEditingDraft] = useState("");
   const [editingLoading, setEditingLoading] = useState(false);
   const [editingError, setEditingError] = useState<string | null>(null);
+  const [draftAttachments, setDraftAttachments] = useState<DraftAttachmentItem[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
 
   const messageViewportRef = useRef<HTMLDivElement | null>(null);
   const markReadInFlightRef = useRef(false);
@@ -444,6 +508,7 @@ export default function MessageThreadPage() {
   const echoReconnectAttemptRef = useRef(0);
   const processedRealtimeEventKeysRef = useRef<string[]>([]);
   const processedRealtimeEventLookupRef = useRef<Set<string>>(new Set());
+  const attachmentInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     latestMessagesRef.current = messages;
@@ -492,6 +557,13 @@ export default function MessageThreadPage() {
     setEditingDraft("");
     setEditingError(null);
     setEditingLoading(false);
+    draftAttachments.forEach((item) => {
+      if (item.previewUrl) {
+        URL.revokeObjectURL(item.previewUrl);
+      }
+    });
+    setDraftAttachments([]);
+    setAttachmentError(null);
     processedRealtimeEventLookupRef.current.clear();
     processedRealtimeEventKeysRef.current = [];
   }, [threadId]);
@@ -528,6 +600,7 @@ export default function MessageThreadPage() {
   const conversation = conversationData?.conversation ?? null;
   const participant = conversationData?.participant ?? null;
   const canEmitTyping = participant?.participant_state === "accepted" && participant.archived_at === null;
+  const hasAttachmentUploadsInProgress = draftAttachments.some((item) => item.status === "uploading");
 
   useEffect(() => {
     if (canEmitTyping) {
@@ -1449,7 +1522,28 @@ export default function MessageThreadPage() {
     event.preventDefault();
 
     const body = draft.trim();
-    if (!body || !threadId || participant?.participant_state !== "accepted") {
+    const readyAttachments = draftAttachments
+      .filter((item) => item.status === "ready" && item.payload)
+      .map((item) => item.payload!) as AttachmentPayload[];
+    const hasAttachments = readyAttachments.length > 0;
+    const hasPendingUploads = draftAttachments.some((item) => item.status === "uploading");
+    const hasUploadErrors = draftAttachments.some((item) => item.status === "error");
+
+    if (!threadId || participant?.participant_state !== "accepted") {
+      return;
+    }
+
+    if (hasPendingUploads) {
+      setSendError("Please wait for attachments to finish uploading.");
+      return;
+    }
+
+    if (hasUploadErrors) {
+      setSendError("Remove failed attachments before sending.");
+      return;
+    }
+
+    if (!body && !hasAttachments) {
       return;
     }
 
@@ -1465,12 +1559,22 @@ export default function MessageThreadPage() {
 
     const clientUid = generateClientUid();
     const optimisticCreatedAt = new Date().toISOString();
+    const optimisticType = !body && hasAttachments
+      ? readyAttachments.every((item) => item.attachment_type === "image")
+        ? "image"
+        : "file"
+      : "text";
+    const optimisticAttachments = hasAttachments
+      ? readyAttachments.map((payload) =>
+          mapAttachmentPayloadToAttachment(payload, `temp-${clientUid}`, currentUserId)
+        )
+      : [];
     const optimisticMessage: Message = {
       id: `temp-${clientUid}`,
       conversation_id: threadId,
       sender_id: currentUserId ?? 0,
-      message_type: "text",
-      body,
+      message_type: optimisticType,
+      body: body || null,
       metadata: { optimistic: true },
       reply_to_message_id: null,
       client_uid: clientUid,
@@ -1485,7 +1589,7 @@ export default function MessageThreadPage() {
             email: currentUser.email,
           }
         : undefined,
-      attachments: [],
+      attachments: optimisticAttachments,
     };
 
     setMessages((previous) => upsertMessageByIdentity(previous, optimisticMessage));
@@ -1494,16 +1598,22 @@ export default function MessageThreadPage() {
       patchThread({
         id: threadId,
         changes: {
-          lastMessage: body,
+          lastMessage: body || (hasAttachments ? `[${optimisticType}]` : ""),
           lastTime: "now",
         },
       })
     );
 
     try {
+      const messageType = !body && hasAttachments
+        ? readyAttachments.every((item) => item.attachment_type === "image")
+          ? "image"
+          : "file"
+        : "text";
       const response = await sendMessage(threadId, {
-        message_type: "text",
-        body,
+        message_type: messageType,
+        body: body || undefined,
+        attachments: hasAttachments ? readyAttachments : undefined,
         client_uid: clientUid,
       });
 
@@ -1523,6 +1633,14 @@ export default function MessageThreadPage() {
       if (sentMessageId) {
         await markThreadRead(sentMessageId);
       }
+
+      draftAttachments.forEach((item) => {
+        if (item.previewUrl) {
+          URL.revokeObjectURL(item.previewUrl);
+        }
+      });
+      setDraftAttachments([]);
+      setAttachmentError(null);
     } catch (error) {
       setMessages((previous) => previous.filter((message) => message.client_uid !== clientUid));
       setDraft(body);
@@ -1721,6 +1839,83 @@ export default function MessageThreadPage() {
     } finally {
       setEditingLoading(false);
     }
+  };
+
+  const uploadDraftAttachment = async (conversationId: string, itemId: string, file: File) => {
+    try {
+      const response = await uploadChatAttachment(conversationId, file);
+      setDraftAttachments((previous) =>
+        previous.map((item) =>
+          item.id === itemId
+            ? {
+                ...item,
+                status: "ready",
+                payload: response.data,
+                error: null,
+              }
+            : item
+        )
+      );
+    } catch (error) {
+      const axiosError = error as AxiosError<ApiValidationErrorPayload>;
+      const firstError = Object.values(axiosError.response?.data?.errors ?? {})[0]?.[0];
+      setDraftAttachments((previous) =>
+        previous.map((item) =>
+          item.id === itemId
+            ? {
+                ...item,
+                status: "error",
+                error: firstError || axiosError.response?.data?.message || "Upload failed.",
+              }
+            : item
+        )
+      );
+    }
+  };
+
+  const handleAttachmentSelect = (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    if (!threadId || files.length === 0) {
+      return;
+    }
+
+    setAttachmentError(null);
+
+    const newItems = files.map((file) => {
+      const isImage = file.type.startsWith("image/");
+      const previewUrl = isImage ? URL.createObjectURL(file) : null;
+      const id = `att-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+      return {
+        id,
+        file,
+        previewUrl,
+        status: "uploading" as DraftAttachmentStatus,
+        error: null,
+        payload: null,
+      };
+    });
+
+    setDraftAttachments((previous) => [...previous, ...newItems]);
+
+    newItems.forEach((item) => {
+      void uploadDraftAttachment(threadId, item.id, item.file);
+    });
+
+    if (attachmentInputRef.current) {
+      attachmentInputRef.current.value = "";
+    }
+  };
+
+  const removeDraftAttachment = (id: string) => {
+    setDraftAttachments((previous) => {
+      const target = previous.find((item) => item.id === id);
+      if (target?.previewUrl) {
+        URL.revokeObjectURL(target.previewUrl);
+      }
+
+      return previous.filter((item) => item.id !== id);
+    });
   };
 
   const handleReactionToggle = async (emoji: string) => {
@@ -2072,8 +2267,9 @@ export default function MessageThreadPage() {
                         canUseMessageActions &&
                         isMine &&
                         !isRemovedForEveryone &&
-                        message.message_type !== "system" &&
+                        message.message_type === "text" &&
                         Boolean(message.body?.trim()) &&
+                        (!message.attachments || message.attachments.length === 0) &&
                         !isEditing;
                       const hasAnyAction =
                         canForwardMessage || canReactMessage || canRemoveForYou || canRemoveEverywhere || canEditMessage;
@@ -2202,27 +2398,56 @@ export default function MessageThreadPage() {
                                 <div className="mt-2 space-y-1.5">
                                   {message.attachments.map((attachment) => {
                                     const attachmentName = attachment.original_name || attachment.storage_path.split("/").pop() || "Attachment";
+                                    const attachmentUrl = resolveAttachmentUrl(attachment);
+                                    const isImageAttachment = attachment.attachment_type === "image";
 
                                     return (
                                       <div
                                         key={String(attachment.id)}
                                         className={`flex items-center gap-2 rounded-lg px-2 py-1 ${isMine ? "bg-blue-500/30" : "bg-slate-100"}`}
                                       >
-                                        <span className={`inline-flex h-5 w-5 items-center justify-center rounded ${isMine ? "bg-blue-400/50 text-white" : "bg-white text-slate-600"}`}>
-                                          {attachment.attachment_type === "image" ? (
-                                            <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-8h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                                            </svg>
-                                          ) : (
-                                            <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14.752 11.168l-6.518 6.518a4 4 0 105.657 5.657l7.07-7.071a6 6 0 10-8.485-8.485l-7.07 7.071a8 8 0 1011.314 11.314l6.518-6.518" />
-                                            </svg>
-                                          )}
-                                        </span>
-                                        <div className="min-w-0">
-                                          <p className={`truncate text-xs font-medium ${isMine ? "text-white" : "text-slate-700"}`}>{attachmentName}</p>
-                                          <p className={`text-[11px] ${isMine ? "text-blue-100" : "text-slate-500"}`}>{formatFileSize(attachment.size_bytes)}</p>
-                                        </div>
+                                        {isImageAttachment && attachmentUrl ? (
+                                          <a
+                                            href={attachmentUrl}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className="flex items-center gap-2"
+                                          >
+                                            <img src={attachmentUrl} alt={attachmentName} className="h-14 w-14 rounded-md object-cover" />
+                                            <div className="min-w-0">
+                                              <p className={`truncate text-xs font-medium ${isMine ? "text-white" : "text-slate-700"}`}>{attachmentName}</p>
+                                              <p className={`text-[11px] ${isMine ? "text-blue-100" : "text-slate-500"}`}>{formatFileSize(attachment.size_bytes)}</p>
+                                            </div>
+                                          </a>
+                                        ) : (
+                                          <>
+                                            <span className={`inline-flex h-5 w-5 items-center justify-center rounded ${isMine ? "bg-blue-400/50 text-white" : "bg-white text-slate-600"}`}>
+                                              {isImageAttachment ? (
+                                                <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-8h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                                                </svg>
+                                              ) : (
+                                                <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14.752 11.168l-6.518 6.518a4 4 0 105.657 5.657l7.07-7.071a6 6 0 10-8.485-8.485l-7.07 7.071a8 8 0 1011.314 11.314l6.518-6.518" />
+                                                </svg>
+                                              )}
+                                            </span>
+                                            <div className="min-w-0">
+                                              <p className={`truncate text-xs font-medium ${isMine ? "text-white" : "text-slate-700"}`}>{attachmentName}</p>
+                                              <p className={`text-[11px] ${isMine ? "text-blue-100" : "text-slate-500"}`}>{formatFileSize(attachment.size_bytes)}</p>
+                                              {attachmentUrl && (
+                                                <a
+                                                  href={attachmentUrl}
+                                                  target="_blank"
+                                                  rel="noreferrer"
+                                                  className={`text-[11px] ${isMine ? "text-blue-100" : "text-blue-600"}`}
+                                                >
+                                                  Open
+                                                </a>
+                                              )}
+                                            </div>
+                                          </>
+                                        )}
                                       </div>
                                     );
                                   })}
@@ -2273,6 +2498,7 @@ export default function MessageThreadPage() {
 
             <form onSubmit={handleSend} className="border-t border-slate-200/80 bg-white px-4 py-3">
               {sendError && <p className="mb-2 text-xs text-rose-600">{sendError}</p>}
+              {attachmentError && <p className="mb-2 text-xs text-rose-600">{attachmentError}</p>}
               {messageActionError && <p className="mb-2 text-xs text-rose-600">{messageActionError}</p>}
               {requestActionError && <p className="mb-2 text-xs text-rose-600">{requestActionError}</p>}
               {archiveActionError && <p className="mb-2 text-xs text-rose-600">{archiveActionError}</p>}
@@ -2310,7 +2536,66 @@ export default function MessageThreadPage() {
                 </p>
               )}
 
+              {draftAttachments.length > 0 && (
+                <div className="mb-3 flex flex-wrap gap-2">
+                  {draftAttachments.map((item) => {
+                    const isImage = item.previewUrl !== null;
+
+                    return (
+                      <div key={item.id} className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700">
+                        {isImage ? (
+                          <img src={item.previewUrl ?? ""} alt={item.file.name} className="h-10 w-10 rounded-md object-cover" />
+                        ) : (
+                          <div className="flex h-10 w-10 items-center justify-center rounded-md bg-slate-100 text-slate-500">
+                            <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14.752 11.168l-6.518 6.518a4 4 0 105.657 5.657l7.07-7.071a6 6 0 10-8.485-8.485l-7.07 7.071a8 8 0 1011.314 11.314l6.518-6.518" />
+                            </svg>
+                          </div>
+                        )}
+                        <div className="min-w-0">
+                          <p className="max-w-[120px] truncate font-medium text-slate-700">{item.file.name}</p>
+                          <p className="text-[11px] text-slate-500">
+                            {formatFileSize(item.file.size)}
+                            {item.status === "uploading" && " · uploading"}
+                            {item.status === "error" && " · failed"}
+                          </p>
+                          {item.error && <p className="text-[11px] text-rose-600">{item.error}</p>}
+                        </div>
+                        <button
+                          type="button"
+                          className="ml-auto text-slate-400 hover:text-slate-700"
+                          onClick={() => removeDraftAttachment(item.id)}
+                          aria-label="Remove attachment"
+                        >
+                          <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
               <div className="flex items-center gap-2">
+                <input
+                  ref={attachmentInputRef}
+                  type="file"
+                  className="hidden"
+                  multiple
+                  accept="image/*,.pdf,.txt,.zip,.docx,.xlsx"
+                  onChange={handleAttachmentSelect}
+                  disabled={!canSendMessage || isLoading}
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => attachmentInputRef.current?.click()}
+                  disabled={!canSendMessage || isLoading || hasAttachmentUploadsInProgress}
+                >
+                  Attach
+                </Button>
                 <input
                   type="text"
                   value={draft}
@@ -2330,7 +2615,7 @@ export default function MessageThreadPage() {
                   type="submit"
                   size="md"
                   className="rounded-full px-4"
-                  disabled={!canSendMessage || isLoading || isSending || draft.trim() === ""}
+                  disabled={!canSendMessage || isLoading || isSending || (draft.trim() === "" && draftAttachments.length === 0)}
                 >
                   {isSending ? "Sending..." : "Send"}
                 </Button>
