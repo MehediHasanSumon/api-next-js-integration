@@ -52,6 +52,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/conversations/{conversation}/messages', [MessageController::class, 'index']);
         Route::post('/conversations/{conversation}/messages', [MessageController::class, 'store']);
         Route::post('/conversations/{conversation}/messages/read', [MessageController::class, 'markRead']);
+        Route::put('/messages/{message}', [MessageController::class, 'update']);
         Route::post('/messages/{message}/forward', [MessageController::class, 'forward']);
         Route::post('/messages/{message}/reactions', [MessageController::class, 'toggleReaction']);
         Route::delete('/messages/{message}/reactions', [MessageController::class, 'removeReaction']);

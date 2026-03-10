@@ -71,6 +71,18 @@ class MessageMutationService
         return $this->messagingService->removeMessageForEveryone($targetMessage, $actor);
     }
 
+    public function edit(Message $message, User $actor, string $body): Message
+    {
+        $targetMessage = $this->resolveVisibleMessage(
+            $message,
+            $actor,
+            ['sender:id,name,email', 'attachments'],
+            true
+        );
+
+        return $this->messagingService->editMessage($targetMessage, $actor, $body);
+    }
+
     private function resolveVisibleMessage(
         Message $message,
         User $actor,

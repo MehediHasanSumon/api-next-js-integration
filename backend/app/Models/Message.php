@@ -87,6 +87,11 @@ class Message extends Model
         return $this->hasMany(MessageReaction::class);
     }
 
+    public function edits(): HasMany
+    {
+        return $this->hasMany(MessageEdit::class);
+    }
+
     public function reactionAggregates(): HasMany
     {
         return $this->hasMany(MessageReaction::class);

@@ -3,6 +3,7 @@
 namespace App\Services\Chat;
 
 use App\Events\Chat\ConversationRead;
+use App\Events\Chat\MessageEdited;
 use App\Events\Chat\MessageReactionUpdated;
 use App\Events\Chat\MessageRemovedEverywhere;
 use App\Events\Chat\MessageRemovedForUser;
@@ -10,10 +11,12 @@ use App\Events\Chat\MessageSent;
 use App\Models\Conversation;
 use App\Models\ConversationParticipant;
 use App\Models\Message;
+use App\Models\MessageEdit;
 use App\Models\MessageReaction;
 use App\Models\MessageReceipt;
 use App\Models\User;
 use Illuminate\Auth\Access\AuthorizationException;
+use Illuminate\Validation\ValidationException;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -21,6 +24,7 @@ use Illuminate\Support\Str;
 class ChatMessagingService
 {
     private const REMOVE_EVERYWHERE_WINDOW_MINUTES = 15;
+    private const EDIT_WINDOW_MINUTES = 20;
     private const REMOVE_EVERYWHERE_TOMBSTONE_TEXT = 'This message was removed.';
 
     public function sendMessage(
@@ -334,6 +338,58 @@ class ChatMessagingService
         ))->toOthers();
 
         return $payload;
+    }
+
+    public function editMessage(Message $message, User $actor, string $body): Message
+    {
+        $trimmedBody = trim($body);
+
+        if ($trimmedBody === '') {
+            throw ValidationException::withMessages([
+                'body' => ['Message body is required.'],
+            ]);
+        }
+
+        if ((int) $message->sender_id !== (int) $actor->id) {
+            throw new AuthorizationException('Only the message sender can edit this message.');
+        }
+
+        if ($message->message_type === 'system') {
+            throw new AuthorizationException('System messages cannot be edited.');
+        }
+
+        $windowStart = now()->subMinutes(self::EDIT_WINDOW_MINUTES);
+        if ($message->created_at === null || $message->created_at->lt($windowStart)) {
+            throw new AuthorizationException('Edit window has expired.');
+        }
+
+        $updated = DB::transaction(function () use ($message, $actor, $trimmedBody): Message {
+            MessageEdit::query()->create([
+                'message_id' => $message->id,
+                'editor_user_id' => $actor->id,
+                'old_body' => (string) ($message->body ?? ''),
+                'new_body' => $trimmedBody,
+                'created_at' => now(),
+            ]);
+
+            $message->forceFill([
+                'body' => $trimmedBody,
+                'edited_at' => now(),
+            ])->save();
+
+            return $message->fresh(['sender:id,name,email', 'attachments']);
+        });
+
+        $editedAtIso = $updated->edited_at?->toISOString() ?? now()->toISOString();
+        broadcast(new MessageEdited(
+            (int) $updated->conversation_id,
+            (int) $updated->id,
+            (string) ($updated->body ?? ''),
+            $editedAtIso,
+            (int) $actor->id
+        ))->toOthers();
+
+        return $updated;
     }
 
     private function syncConversationAfterMessageMutation(

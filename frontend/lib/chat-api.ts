@@ -28,6 +28,8 @@ import type {
   RequestAction,
   SendMessagePayload,
   SendMessageResponse,
+  UpdateMessagePayload,
+  UpdateMessageResponse,
   StartConversationPayload,
   StartConversationResponse,
   ToggleMessageReactionPayload,
@@ -71,6 +73,8 @@ export type {
   RequestAction,
   SendMessagePayload,
   SendMessageResponse,
+  UpdateMessagePayload,
+  UpdateMessageResponse,
   StartConversationPayload,
   StartConversationResponse,
   ToggleMessageReactionPayload,
@@ -479,6 +483,14 @@ export const sendMessage = async (
   return normalizeMessageResponse(data);
 };
 
+export const updateMessage = async (
+  messageId: MessageId,
+  payload: UpdateMessagePayload
+): Promise<UpdateMessageResponse> => {
+  const { data } = await api.put<UpdateMessageResponse>(messagePath(messageId), payload);
+  return normalizeMessageResponse(data);
+};
+
 export const forwardMessage = async (
   messageId: MessageId,
   payload: ForwardMessagePayload
@@ -581,6 +593,7 @@ const chatApi = {
   showConversation,
   listMessages,
   sendMessage,
+  updateMessage,
   forwardMessage,
   toggleMessageReaction,
   removeMessageReaction,

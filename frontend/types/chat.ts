@@ -254,6 +254,15 @@ export interface SendMessageResponse {
   data: Message;
 }
 
+export interface UpdateMessagePayload {
+  body: string;
+}
+
+export interface UpdateMessageResponse {
+  message: string;
+  data: Message;
+}
+
 export interface ForwardMessagePayload {
   target_conversation_id: ConversationId;
   body?: string | null;

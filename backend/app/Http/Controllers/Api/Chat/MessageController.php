@@ -8,6 +8,7 @@ use App\Http\Requests\Chat\RemoveMessageForEverywhereRequest;
 use App\Http\Requests\Chat\RemoveMessageForYouRequest;
 use App\Http\Requests\Chat\RemoveMessageReactionRequest;
 use App\Http\Requests\Chat\SendMessageRequest;
+use App\Http\Requests\Chat\UpdateMessageRequest;
 use App\Http\Requests\Chat\ToggleMessageReactionRequest;
 use App\Models\Conversation;
 use App\Models\Message;
@@ -82,6 +83,20 @@ class MessageController extends Controller
             'message' => 'Message forwarded successfully.',
             'data' => $forwardedMessage,
         ], 201);
+    }
+
+    public function update(
+        UpdateMessageRequest $request,
+        Message $message,
+        MessageMutationService $mutationService
+    ): JsonResponse {
+        $actor = $request->user();
+        $updatedMessage = $mutationService->edit($message, $actor, $request->validated('body'));
+
+        return response()->json([
+            'message' => 'Message updated successfully.',
+            'data' => $updatedMessage,
+        ]);
     }
 
     public function markRead(

@@ -506,6 +506,79 @@ test('explicit remove reaction endpoint is idempotent for missing emoji reaction
         ->assertJsonPath('data.reaction_aggregates', []);
 });
 
+test('sender can edit message within time window and history is stored', function () {
+    $sender = User::factory()->create();
+    $receiver = User::factory()->create();
+    $conversation = createDirectConversation($sender, $receiver);
+
+    $message = $conversation->messages()->create([
+        'sender_id' => $sender->id,
+        'message_type' => 'text',
+        'body' => 'Original body',
+    ]);
+
+    actingAs($sender)
+        ->putJson("/api/chat/messages/{$message->id}", [
+            'body' => 'Updated body',
+        ])
+        ->assertOk()
+        ->assertJsonPath('data.body', 'Updated body');
+
+    $message->refresh();
+
+    expect($message->edited_at)->not->toBeNull();
+
+    $this->assertDatabaseHas('message_edits', [
+        'message_id' => $message->id,
+        'editor_user_id' => $sender->id,
+        'old_body' => 'Original body',
+        'new_body' => 'Updated body',
+    ]);
+});
+
+test('sender cannot edit message after edit window expires', function () {
+    $sender = User::factory()->create();
+    $receiver = User::factory()->create();
+    $conversation = createDirectConversation($sender, $receiver);
+
+    $message = $conversation->messages()->create([
+        'sender_id' => $sender->id,
+        'message_type' => 'text',
+        'body' => 'Old message',
+    ]);
+
+    $message->forceFill([
+        'created_at' => now()->subMinutes(25),
+        'updated_at' => now()->subMinutes(25),
+    ])->saveQuietly();
+
+    actingAs($sender)
+        ->putJson("/api/chat/messages/{$message->id}", [
+            'body' => 'Too late',
+        ])
+        ->assertForbidden()
+        ->assertJsonPath('error.code', 'FORBIDDEN');
+});
+
+test('non-sender cannot edit message', function () {
+    $sender = User::factory()->create();
+    $otherUser = User::factory()->create();
+    $conversation = createDirectConversation($sender, $otherUser);
+
+    $message = $conversation->messages()->create([
+        'sender_id' => $sender->id,
+        'message_type' => 'text',
+        'body' => 'Sender message',
+    ]);
+
+    actingAs($otherUser)
+        ->putJson("/api/chat/messages/{$message->id}", [
+            'body' => 'Not allowed',
+        ])
+        ->assertForbidden()
+        ->assertJsonPath('error.code', 'FORBIDDEN');
+});
+
 test('participant can remove message for self only', function () {
     $sender = User::factory()->create();
     $actor = User::factory()->create();

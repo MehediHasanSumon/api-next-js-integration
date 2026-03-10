@@ -17,6 +17,7 @@ import {
   removeMessageReaction,
   respondToConversationRequest,
   sendMessage,
+  updateMessage,
   showConversation,
   toggleMessageReaction,
   updateTyping,
@@ -80,6 +81,14 @@ interface ChatMessageReactionUpdatedEvent {
   reactions_total: number;
   reaction_aggregates: ReactionAggregate[];
   sent_at?: string;
+}
+
+interface ChatMessageEditedEvent {
+  conversation_id: number | string;
+  message_id: number | string;
+  body: string;
+  edited_at: string;
+  editor_user_id: number;
 }
 
 interface ChatMessageRemovedEvent {
@@ -415,6 +424,10 @@ export default function MessageThreadPage() {
   const [removeModalMode, setRemoveModalMode] = useState<MessageRemovalMode>("for_you");
   const [removeModalLoading, setRemoveModalLoading] = useState(false);
   const [removeModalError, setRemoveModalError] = useState<string | null>(null);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editingDraft, setEditingDraft] = useState("");
+  const [editingLoading, setEditingLoading] = useState(false);
+  const [editingError, setEditingError] = useState<string | null>(null);
 
   const messageViewportRef = useRef<HTMLDivElement | null>(null);
   const markReadInFlightRef = useRef(false);
@@ -475,6 +488,10 @@ export default function MessageThreadPage() {
     setRemoveModalMode("for_you");
     setRemoveModalError(null);
     setRemoveModalLoading(false);
+    setEditingMessageId(null);
+    setEditingDraft("");
+    setEditingError(null);
+    setEditingLoading(false);
     processedRealtimeEventLookupRef.current.clear();
     processedRealtimeEventKeysRef.current = [];
   }, [threadId]);
@@ -1117,6 +1134,39 @@ export default function MessageThreadPage() {
       );
     });
 
+    channel.listen(".chat.message.edited", (payload: ChatMessageEditedEvent) => {
+      if (String(payload.conversation_id) !== threadId) {
+        return;
+      }
+
+      const dedupeKey = `message.edited:${threadId}:${String(payload.message_id)}:${payload.edited_at}:${payload.editor_user_id}`;
+      if (!rememberRealtimeEvent(dedupeKey)) {
+        return;
+      }
+
+      const messageIdKey = String(payload.message_id);
+
+      setMessages((previous) =>
+        patchMessageById(previous, messageIdKey, (message) => ({
+          ...message,
+          body: payload.body,
+          edited_at: payload.edited_at,
+        }))
+      );
+
+      if (String(conversation?.last_message_id ?? "") === messageIdKey) {
+        dispatch(
+          patchThread({
+            id: threadId,
+            changes: {
+              lastMessage: payload.body?.trim() || "[text]",
+              lastTime: "now",
+            },
+          })
+        );
+      }
+    });
+
     channel.listen(".chat.message.removed", (payload: ChatMessageRemovedEvent) => {
       if (payload.mode !== "everywhere" || String(payload.conversation_id) !== threadId) {
         return;
@@ -1583,6 +1633,27 @@ export default function MessageThreadPage() {
     setRemoveModalError(null);
   };
 
+  const startEditingMessage = (message: Message) => {
+    const body = message.body?.trim() ?? "";
+
+    if (body === "") {
+      return;
+    }
+
+    setMessageActionMenuId(null);
+    setMessageActionError(null);
+    setEditingMessageId(String(message.id));
+    setEditingDraft(message.body ?? "");
+    setEditingError(null);
+  };
+
+  const cancelEditingMessage = () => {
+    setEditingMessageId(null);
+    setEditingDraft("");
+    setEditingError(null);
+    setEditingLoading(false);
+  };
+
   const closeReactionModal = () => {
     setReactionModalMessage(null);
     setReactionMutationLoadingKey(null);
@@ -1600,6 +1671,56 @@ export default function MessageThreadPage() {
     setRemoveModalLoading(false);
     setRemoveModalError(null);
     setRemoveModalMode("for_you");
+  };
+
+  const handleEditSave = async () => {
+    if (!editingMessageId || !threadId) {
+      return;
+    }
+
+    const nextBody = editingDraft.trim();
+    if (nextBody === "") {
+      setEditingError("Message body is required.");
+      return;
+    }
+
+    setEditingLoading(true);
+    setEditingError(null);
+
+    try {
+      const response = await updateMessage(editingMessageId, { body: nextBody });
+      const updatedMessage = response.data;
+
+      setMessages((previous) =>
+        patchMessageById(previous, editingMessageId, (message) => ({
+          ...message,
+          ...updatedMessage,
+          attachments: updatedMessage.attachments ?? message.attachments ?? [],
+          reaction_aggregates: updatedMessage.reaction_aggregates ?? message.reaction_aggregates ?? [],
+          reactions_total: updatedMessage.reactions_total ?? message.reactions_total ?? 0,
+        }))
+      );
+
+      if (String(conversation?.last_message_id ?? "") === editingMessageId) {
+        dispatch(
+          patchThread({
+            id: threadId,
+            changes: {
+              lastMessage: updatedMessage.body?.trim() || `[${updatedMessage.message_type}]`,
+              lastTime: "now",
+            },
+          })
+        );
+      }
+
+      cancelEditingMessage();
+    } catch (error) {
+      const axiosError = error as AxiosError<{ errors?: Record<string, string[]>; message?: string }>;
+      const firstError = Object.values(axiosError.response?.data?.errors ?? {})[0]?.[0];
+      setEditingError(firstError || axiosError.response?.data?.message || "Failed to update message.");
+    } finally {
+      setEditingLoading(false);
+    }
   };
 
   const handleReactionToggle = async (emoji: string) => {
@@ -1940,13 +2061,23 @@ export default function MessageThreadPage() {
                       const isMine = currentUserId !== null && Number(message.sender_id) === currentUserId;
                       const isOptimistic = String(message.id).startsWith("temp-");
                       const messageIdKey = String(message.id);
+                      const isEditing = editingMessageId === messageIdKey;
                       const isRemovedForEveryone = hasRemovedForEveryoneFlag(message);
                       const canUseMessageActions = participant?.participant_state === "accepted" && participant.archived_at === null && !isOptimistic;
                       const canReactMessage = canUseMessageActions && !isRemovedForEveryone;
                       const canForwardMessage = canUseMessageActions && !isRemovedForEveryone;
                       const canRemoveForYou = !isOptimistic;
                       const canRemoveEverywhere = canRemoveEverywhereByPolicy(message);
-                      const hasAnyAction = canForwardMessage || canReactMessage || canRemoveForYou || canRemoveEverywhere;
+                      const canEditMessage =
+                        canUseMessageActions &&
+                        isMine &&
+                        !isRemovedForEveryone &&
+                        message.message_type !== "system" &&
+                        Boolean(message.body?.trim()) &&
+                        !isEditing;
+                      const hasAnyAction =
+                        canForwardMessage || canReactMessage || canRemoveForYou || canRemoveEverywhere || canEditMessage;
+                      const editedLabel = !isOptimistic && message.edited_at ? " \u00b7 edited" : "";
                       const messageText =
                         message.body?.trim() ||
                         (message.attachments && message.attachments.length > 0
@@ -1985,6 +2116,15 @@ export default function MessageThreadPage() {
                                         Forward
                                       </button>
                                     )}
+                                    {canEditMessage && (
+                                      <button
+                                        type="button"
+                                        className="w-full rounded-md px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-100"
+                                        onClick={() => startEditingMessage(message)}
+                                      >
+                                        Edit
+                                      </button>
+                                    )}
                                     {canReactMessage && (
                                       <button
                                         type="button"
@@ -2019,7 +2159,44 @@ export default function MessageThreadPage() {
                                 <p className={`mb-1 text-[11px] font-medium ${isMine ? "text-blue-100" : "text-slate-500"}`}>Forwarded</p>
                               )}
 
-                              <p className={`text-sm leading-relaxed ${isRemovedForEveryone ? "italic opacity-85" : ""}`}>{messageText}</p>
+                              {isEditing ? (
+                                <div className="space-y-2">
+                                  <textarea
+                                    value={editingDraft}
+                                    onChange={(event) => setEditingDraft(event.target.value)}
+                                    rows={3}
+                                    disabled={editingLoading}
+                                    className={`w-full resize-none rounded-md border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200 ${
+                                      isMine
+                                        ? "border-blue-400/60 bg-blue-500/20 text-white placeholder:text-blue-100"
+                                        : "border-slate-200 bg-white text-slate-800"
+                                    }`}
+                                  />
+                                  {editingError && <p className={`text-xs ${isMine ? "text-blue-100" : "text-rose-600"}`}>{editingError}</p>}
+                                  <div className="flex justify-end gap-2">
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={cancelEditingMessage}
+                                      disabled={editingLoading}
+                                    >
+                                      Cancel
+                                    </Button>
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      onClick={() => void handleEditSave()}
+                                      disabled={editingLoading || editingDraft.trim() === ""}
+                                      loading={editingLoading}
+                                    >
+                                      Save
+                                    </Button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <p className={`text-sm leading-relaxed ${isRemovedForEveryone ? "italic opacity-85" : ""}`}>{messageText}</p>
+                              )}
 
                               {message.attachments && message.attachments.length > 0 && (
                                 <div className="mt-2 space-y-1.5">
@@ -2052,7 +2229,7 @@ export default function MessageThreadPage() {
                                 </div>
                               )}
 
-                              {Array.isArray(message.reaction_aggregates) && message.reaction_aggregates.length > 0 && (
+                              {!isEditing && Array.isArray(message.reaction_aggregates) && message.reaction_aggregates.length > 0 && (
                                 <div className={`mt-2 flex flex-wrap gap-1 ${isMine ? "justify-end" : "justify-start"}`}>
                                   {message.reaction_aggregates.map((aggregate) => (
                                     <button
@@ -2082,7 +2259,7 @@ export default function MessageThreadPage() {
                               )}
 
                               <p className={`mt-1 text-[11px] ${isMine ? "text-blue-100" : "text-slate-500"}`}>
-                                {isOptimistic ? "Sending..." : formatClockTime(message.created_at)}
+                                {isOptimistic ? "Sending..." : `${formatClockTime(message.created_at)}${editedLabel}`}
                               </p>
                             </div>
                           </div>
