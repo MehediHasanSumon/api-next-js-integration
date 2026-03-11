@@ -4,7 +4,7 @@ import Link from "next/link";
 import { ChangeEvent, FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import type { AxiosError } from "axios";
-import { Forward, PencilLine, SmilePlus, Trash2 } from "lucide-react";
+import { Forward, PencilLine, Search, SmilePlus, Trash2, X } from "lucide-react";
 import ProtectedShell from "@/components/ProtectedShell";
 import Button from "@/components/Button";
 import MessengerLayout from "@/components/messenger/MessengerLayout";
@@ -295,6 +295,22 @@ const resolveAttachmentUrl = (attachment: Attachment | AttachmentPayload): strin
   return `${baseUrl}/storage/${normalizedPath}`;
 };
 
+const resolveAvatarUrl = (avatarPath: string | null): string | null => {
+  if (!avatarPath) {
+    return null;
+  }
+
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL;
+  if (!apiUrl) {
+    return null;
+  }
+
+  const baseUrl = apiUrl.replace(/\/api\/?$/, "");
+  const normalizedPath = avatarPath.replace(/^public\//, "").replace(/^\/+/, "");
+
+  return `${baseUrl}/storage/${normalizedPath}`;
+};
+
 const mapAttachmentPayloadToAttachment = (
   payload: AttachmentPayload,
   messageId: string,
@@ -488,8 +504,8 @@ export default function MessageThreadPage() {
   const [reactionPopoverPosition, setReactionPopoverPosition] = useState<{ top: number; left: number } | null>(null);
   const [reactionMutationLoadingKey, setReactionMutationLoadingKey] = useState<string | null>(null);
   const [forwardModalMessage, setForwardModalMessage] = useState<Message | null>(null);
-  const [forwardModalConversationId, setForwardModalConversationId] = useState<string>("");
-  const [forwardModalComment, setForwardModalComment] = useState("");
+  const [forwardSearch, setForwardSearch] = useState("");
+  const [forwardSendingId, setForwardSendingId] = useState<string | null>(null);
   const [forwardModalError, setForwardModalError] = useState<string | null>(null);
   const [forwardModalLoading, setForwardModalLoading] = useState(false);
   const [forwardTargets, setForwardTargets] = useState<ConversationListItem[]>([]);
@@ -561,8 +577,8 @@ export default function MessageThreadPage() {
     setReactionModalMessage(null);
     setReactionMutationLoadingKey(null);
     setForwardModalMessage(null);
-    setForwardModalConversationId("");
-    setForwardModalComment("");
+    setForwardSearch("");
+    setForwardSendingId(null);
     setForwardModalError(null);
     setForwardModalLoading(false);
     setForwardTargets([]);
@@ -791,6 +807,26 @@ export default function MessageThreadPage() {
     });
   }, [filter, searchQuery, threads]);
 
+  const filteredForwardTargets = useMemo(() => {
+    const query = forwardSearch.trim().toLowerCase();
+    if (query === "") {
+      return forwardTargets;
+    }
+
+    return forwardTargets.filter((target) => {
+      const label =
+        target.title?.trim() ||
+        target.counterpart?.name?.trim() ||
+        target.counterpart?.email ||
+        `Conversation #${target.conversation_id}`;
+      const labelLower = label.toLowerCase();
+      const emailLower = target.counterpart?.email?.toLowerCase() ?? "";
+      const idMatch = String(target.conversation_id).includes(query);
+
+      return labelLower.includes(query) || emailLower.includes(query) || idMatch;
+    });
+  }, [forwardSearch, forwardTargets]);
+
   const refreshThreads = useCallback(async () => {
     await dispatch(fetchInboxThreads());
   }, [dispatch]);
@@ -928,23 +964,13 @@ export default function MessageThreadPage() {
       const response = await listConversations({ filter: "all", per_page: 100 });
       const acceptedTargets = response.data.filter((item) => item.participant_state === "accepted");
       setForwardTargets(acceptedTargets);
-
-      if (acceptedTargets.length === 0) {
-        setForwardModalConversationId("");
-      } else {
-        const currentIdInTargets = acceptedTargets.some((item) => String(item.conversation_id) === forwardModalConversationId);
-        if (!currentIdInTargets) {
-          setForwardModalConversationId(String(acceptedTargets[0].conversation_id));
-        }
-      }
     } catch {
       setForwardModalError("Failed to load conversation list.");
       setForwardTargets([]);
-      setForwardModalConversationId("");
     } finally {
       setForwardTargetsLoading(false);
     }
-  }, [forwardModalConversationId]);
+  }, []);
 
   const refreshPresenceSnapshotForUserIds = useCallback(async (ids: number[]) => {
     const targetUserIds = Array.from(new Set(ids.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0)));
@@ -1892,7 +1918,8 @@ export default function MessageThreadPage() {
   const openForwardModal = (message: Message) => {
     setMessageActionError(null);
     setForwardModalMessage(message);
-    setForwardModalComment("");
+    setForwardSearch("");
+    setForwardSendingId(null);
     setForwardModalError(null);
     void loadForwardTargets();
   };
@@ -1941,7 +1968,8 @@ export default function MessageThreadPage() {
     setForwardModalMessage(null);
     setForwardModalLoading(false);
     setForwardModalError(null);
-    setForwardModalComment("");
+    setForwardSearch("");
+    setForwardSendingId(null);
   };
 
   const closeRemoveModal = () => {
@@ -2072,21 +2100,20 @@ export default function MessageThreadPage() {
     }
   };
 
-  const handleForwardSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-
-    if (!forwardModalMessage || !forwardModalConversationId) {
-      setForwardModalError("Please choose a conversation.");
+  const handleQuickForward = async (targetConversationId: string | number) => {
+    if (!forwardModalMessage) {
       return;
     }
 
+    const targetId = String(targetConversationId);
+
     setForwardModalLoading(true);
+    setForwardSendingId(targetId);
     setForwardModalError(null);
 
     try {
       const response = await forwardMessage(forwardModalMessage.id, {
-        target_conversation_id: forwardModalConversationId,
-        body: forwardModalComment.trim() === "" ? undefined : forwardModalComment.trim(),
+        target_conversation_id: targetId,
       });
 
       if (String(response.data.conversation_id) === threadId) {
@@ -2118,6 +2145,7 @@ export default function MessageThreadPage() {
       }
     } finally {
       setForwardModalLoading(false);
+      setForwardSendingId(null);
     }
   };
 
@@ -2795,60 +2823,93 @@ export default function MessageThreadPage() {
             aria-label="Close forward modal"
             onClick={forwardModalLoading ? undefined : closeForwardModal}
           />
-
-          <form onSubmit={handleForwardSubmit} className="relative w-full max-w-lg rounded-2xl border border-white/60 bg-white p-5 shadow-2xl">
-            <h2 className="text-base font-semibold text-slate-900">Forward Message</h2>
-            <p className="mt-2 rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-600">
-              {forwardModalMessage.body?.trim() || `[${forwardModalMessage.message_type}]`}
-            </p>
-
-            <label className="mt-4 block text-xs font-semibold uppercase tracking-wide text-slate-500">Conversation</label>
-            <select
-              value={forwardModalConversationId}
-              onChange={(event) => setForwardModalConversationId(event.target.value)}
-              disabled={forwardTargetsLoading || forwardModalLoading}
-              className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-200"
-            >
-              {forwardTargets.length === 0 ? (
-                <option value="">{forwardTargetsLoading ? "Loading..." : "No accepted conversation found"}</option>
-              ) : (
-                forwardTargets.map((target) => {
-                  const label =
-                    target.title?.trim() ||
-                    target.counterpart?.name?.trim() ||
-                    target.counterpart?.email ||
-                    `Conversation #${target.conversation_id}`;
-
-                  return (
-                    <option key={String(target.conversation_id)} value={String(target.conversation_id)}>
-                      {label}
-                    </option>
-                  );
-                })
-              )}
-            </select>
-
-            <label className="mt-4 block text-xs font-semibold uppercase tracking-wide text-slate-500">Comment (optional)</label>
-            <textarea
-              value={forwardModalComment}
-              onChange={(event) => setForwardModalComment(event.target.value)}
-              placeholder="Add a note"
-              rows={3}
-              disabled={forwardModalLoading}
-              className="mt-1 w-full resize-none rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-200"
-            />
-
-            {forwardModalError && <p className="mt-2 text-xs text-rose-600">{forwardModalError}</p>}
-
-            <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-              <Button type="button" variant="outline" onClick={closeForwardModal} disabled={forwardModalLoading}>
-                Cancel
-              </Button>
-              <Button type="submit" loading={forwardModalLoading} disabled={forwardModalLoading || !forwardModalConversationId}>
-                Forward
-              </Button>
+          <div className="relative w-full max-w-md overflow-hidden rounded-2xl border border-white/10 bg-slate-900 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
+              <h2 className="text-base font-semibold text-slate-100">Forward</h2>
+              <button
+                type="button"
+                className="flex h-8 w-8 items-center justify-center rounded-full bg-white/5 text-slate-200 transition hover:bg-white/10"
+                onClick={forwardModalLoading ? undefined : closeForwardModal}
+                disabled={forwardModalLoading}
+                aria-label="Close forward modal"
+              >
+                <X className="h-4 w-4" />
+              </button>
             </div>
-          </form>
+
+            <div className="px-5 py-4">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <input
+                  value={forwardSearch}
+                  onChange={(event) => setForwardSearch(event.target.value)}
+                  placeholder="Search for people and groups"
+                  className="h-10 w-full rounded-full border border-white/10 bg-white/5 pl-9 pr-3 text-sm text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+                  disabled={forwardModalLoading}
+                />
+              </div>
+
+              <div className="mt-4 flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-400">
+                <span>Contacts</span>
+                <span>{filteredForwardTargets.length}</span>
+              </div>
+
+              <div className="mt-3 max-h-[360px] space-y-2 overflow-y-auto pr-1">
+                {forwardTargetsLoading ? (
+                  <p className="text-sm text-slate-400">Loading contacts...</p>
+                ) : filteredForwardTargets.length === 0 ? (
+                  <p className="text-sm text-slate-400">No contacts found.</p>
+                ) : (
+                  filteredForwardTargets.map((target) => {
+                    const label =
+                      target.title?.trim() ||
+                      target.counterpart?.name?.trim() ||
+                      target.counterpart?.email ||
+                      `Conversation #${target.conversation_id}`;
+                    const subtitle =
+                      target.counterpart?.email && target.counterpart.email !== label ? target.counterpart.email : null;
+                    const avatarUrl = resolveAvatarUrl(target.avatar_path);
+                    const initial = label.charAt(0).toUpperCase();
+                    const targetId = String(target.conversation_id);
+                    const isSending = forwardSendingId === targetId;
+
+                    return (
+                      <div
+                        key={targetId}
+                        className="flex items-center justify-between gap-3 rounded-xl border border-white/5 bg-white/5 px-3 py-2"
+                      >
+                        <div className="flex min-w-0 items-center gap-3">
+                          <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-full bg-slate-700 text-sm font-semibold text-slate-100">
+                            {avatarUrl ? (
+                              <img src={avatarUrl} alt="" className="h-full w-full object-cover" />
+                            ) : (
+                              initial
+                            )}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium text-slate-100">{label}</p>
+                            {subtitle && <p className="truncate text-xs text-slate-400">{subtitle}</p>}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+                          disabled={forwardModalLoading || isSending}
+                          onClick={() => void handleQuickForward(targetId)}
+                        >
+                          {isSending ? "Sending..." : "Send"}
+                        </button>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            {forwardModalError && (
+              <div className="border-t border-white/10 px-5 py-3 text-xs text-rose-300">{forwardModalError}</div>
+            )}
+          </div>
         </div>
       )}
 
