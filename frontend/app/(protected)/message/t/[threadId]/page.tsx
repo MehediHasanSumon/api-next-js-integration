@@ -510,6 +510,7 @@ export default function MessageThreadPage() {
   const [forwardModalLoading, setForwardModalLoading] = useState(false);
   const [forwardTargets, setForwardTargets] = useState<ConversationListItem[]>([]);
   const [forwardTargetsLoading, setForwardTargetsLoading] = useState(false);
+  const [imageViewer, setImageViewer] = useState<{ url: string; name: string } | null>(null);
   const [removeModalMessage, setRemoveModalMessage] = useState<Message | null>(null);
   const [removeModalMode, setRemoveModalMode] = useState<MessageRemovalMode>("for_you");
   const [removeModalLoading, setRemoveModalLoading] = useState(false);
@@ -1972,6 +1973,14 @@ export default function MessageThreadPage() {
     setForwardSendingId(null);
   };
 
+  const openImageViewer = (url: string, name: string) => {
+    setImageViewer({ url, name });
+  };
+
+  const closeImageViewer = () => {
+    setImageViewer(null);
+  };
+
   const closeRemoveModal = () => {
     setRemoveModalMessage(null);
     setRemoveModalLoading(false);
@@ -2505,18 +2514,18 @@ export default function MessageThreadPage() {
                                         className={`flex items-center gap-2 rounded-lg px-2 py-1 ${isMine ? "bg-white/20" : "bg-slate-100"}`}
                                       >
                                         {isImageAttachment && attachmentUrl ? (
-                                          <a
-                                            href={attachmentUrl}
-                                            target="_blank"
-                                            rel="noreferrer"
-                                            className="flex items-center gap-2"
+                                          <button
+                                            type="button"
+                                            onClick={() => openImageViewer(attachmentUrl, attachmentName)}
+                                            className="flex items-center gap-2 text-left"
+                                            aria-label={`Open image ${attachmentName}`}
                                           >
                                             <img src={attachmentUrl} alt={attachmentName} className="h-14 w-14 rounded-md object-cover" />
                                             <div className="min-w-0">
                                               <p className={`truncate text-xs font-medium ${isMine ? "text-white" : "text-slate-700"}`}>{attachmentName}</p>
                                               <p className={`text-[11px] ${isMine ? "text-blue-100" : "text-slate-500"}`}>{formatFileSize(attachment.size_bytes)}</p>
                                             </div>
-                                          </a>
+                                          </button>
                                         ) : (
                                           <>
                                             <span className={`inline-flex h-5 w-5 items-center justify-center rounded ${isMine ? "bg-white/30 text-white" : "bg-white text-slate-600"}`}>
@@ -2652,7 +2661,14 @@ export default function MessageThreadPage() {
                     return (
                       <div key={item.id} className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white/90 px-2 py-1 text-xs text-slate-700 shadow-sm">
                         {isImage ? (
-                          <img src={item.previewUrl ?? ""} alt={item.file.name} className="h-10 w-10 rounded-md object-cover" />
+                          <button
+                            type="button"
+                            onClick={() => openImageViewer(item.previewUrl ?? "", item.file.name)}
+                            className="rounded-md"
+                            aria-label={`Open image ${item.file.name}`}
+                          >
+                            <img src={item.previewUrl ?? ""} alt={item.file.name} className="h-10 w-10 rounded-md object-cover" />
+                          </button>
                         ) : (
                           <div className="flex h-10 w-10 items-center justify-center rounded-md bg-slate-100 text-slate-500">
                             <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor">
@@ -2909,6 +2925,35 @@ export default function MessageThreadPage() {
             {forwardModalError && (
               <div className="border-t border-slate-200 px-5 py-3 text-xs text-rose-600">{forwardModalError}</div>
             )}
+          </div>
+        </div>
+      )}
+
+      {imageViewer && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <button
+            type="button"
+            className="absolute inset-0 bg-slate-950/80"
+            aria-label="Close image viewer"
+            onClick={closeImageViewer}
+          />
+          <div className="relative z-10 w-full max-w-4xl">
+            <button
+              type="button"
+              className="absolute -top-10 right-0 flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-white transition hover:bg-white/20"
+              onClick={closeImageViewer}
+              aria-label="Close image viewer"
+            >
+              <X className="h-4 w-4" />
+            </button>
+            <div className="overflow-hidden rounded-2xl bg-slate-900 shadow-2xl">
+              <img
+                src={imageViewer.url}
+                alt={imageViewer.name}
+                className="max-h-[80vh] w-full object-contain"
+              />
+            </div>
+            <p className="mt-3 text-center text-xs text-slate-200">{imageViewer.name}</p>
           </div>
         </div>
       )}
