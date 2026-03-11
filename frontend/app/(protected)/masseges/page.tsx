@@ -6,6 +6,8 @@ import { useRouter } from "next/navigation";
 import type { AxiosError } from "axios";
 import ProtectedShell from "@/components/ProtectedShell";
 import Button from "@/components/Button";
+import MessengerLayout from "@/components/messenger/MessengerLayout";
+import MessengerSidebar from "@/components/messenger/MessengerSidebar";
 import { startConversation } from "@/lib/chat-api";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { fetchInboxThreads } from "@/store/chatSlice";
@@ -86,113 +88,98 @@ export default function MassegesPage() {
 
   return (
     <ProtectedShell title="Masseges" description="Team conversations and quick updates" showPageHeader={false}>
-      <div className="overflow-hidden rounded-2xl border border-white/70 bg-white/90">
-        <div className="grid h-[calc(100dvh-7.8rem)] min-h-[560px] grid-cols-1 lg:grid-cols-[340px_minmax(0,1fr)]">
-          <aside className="flex min-h-0 h-full flex-col border-r border-slate-200/80 bg-white/85">
-            <div className="border-b border-slate-200/80 px-4 py-3">
-              <div className="mb-3 flex items-center justify-between">
-                <h2 className="text-sm font-semibold text-slate-900">Chats</h2>
-                <div className="flex items-center gap-2">
-                  <span className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-600">
-                    {filteredThreads.length}
-                  </span>
-                  <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => setIsNewChatOpen(true)}>
-                    New Chat
-                  </Button>
-                </div>
+      <MessengerLayout showInfo={false}>
+          <MessengerSidebar
+            title="Chats"
+            action={
+              <div className="flex items-center gap-2">
+                <span className="rounded-full border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-600 shadow-sm">
+                  {filteredThreads.length}
+                </span>
+                <Button type="button" size="sm" variant="outline" className="h-7 rounded-full px-3 text-[11px]" onClick={() => setIsNewChatOpen(true)}>
+                  New Chat
+                </Button>
               </div>
-
-              <div className="relative">
-                <svg className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-4.35-4.35M10.5 18a7.5 7.5 0 100-15 7.5 7.5 0 000 15z" />
-                </svg>
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(event) => setSearchQuery(event.target.value)}
-                  placeholder="Search conversations"
-                  className="h-10 w-full rounded-md border border-slate-300 bg-white pl-9 pr-3 text-sm text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-200"
-                />
+            }
+            searchValue={searchQuery}
+            onSearchChange={setSearchQuery}
+            filters={
+              <div className="grid grid-cols-3 gap-1">
+                <Button
+                  type="button"
+                  variant={filter === "inbox" ? "secondary" : "ghost"}
+                  size="sm"
+                  className="h-8 rounded-full text-xs"
+                  onClick={() => setFilter("inbox")}
+                >
+                  Inbox
+                </Button>
+                <Button
+                  type="button"
+                  variant={filter === "unread" ? "secondary" : "ghost"}
+                  size="sm"
+                  className="h-8 rounded-full text-xs"
+                  onClick={() => setFilter("unread")}
+                >
+                  Unread {unreadCount > 0 ? `(${unreadCount})` : ""}
+                </Button>
+                <Button type="button" variant="ghost" size="sm" className="h-8 rounded-full text-xs" disabled title="Online filter will use realtime presence later">
+                  Online
+                </Button>
               </div>
-            </div>
+            }
+          >
+            {isLoading ? (
+              <div className="rounded-2xl border border-dashed border-slate-200 bg-white/80 p-4 text-center">
+                <p className="text-sm font-medium text-slate-700">Loading conversations...</p>
+              </div>
+            ) : errorMessage ? (
+              <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-center">
+                <p className="text-sm font-medium text-rose-700">{errorMessage}</p>
+                <Button type="button" size="sm" variant="outline" className="mt-3 rounded-full" onClick={() => void fetchConversations()}>
+                  Retry
+                </Button>
+              </div>
+            ) : filteredThreads.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-slate-200 bg-white/80 p-4 text-center">
+                <p className="text-sm font-medium text-slate-700">No conversations found</p>
+                <p className="mt-1 text-xs text-slate-500">Try a different search or filter.</p>
+              </div>
+            ) : (
+              <div className="space-y-1">
+                {filteredThreads.map((thread) => (
+                  <Link
+                    key={thread.id}
+                    href={`/message/t/${thread.id}`}
+                    className="flex items-start gap-3 rounded-2xl px-3 py-2 transition hover:bg-slate-100/80"
+                  >
+                    <div className="relative mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-sky-500 to-blue-600 text-sm font-semibold text-white">
+                      {thread.name.charAt(0)}
+                    </div>
 
-            <div className="grid grid-cols-3 gap-1 border-b border-slate-200/80 p-2">
-              <Button
-                type="button"
-                variant={filter === "inbox" ? "secondary" : "ghost"}
-                size="sm"
-                className="h-8 text-xs"
-                onClick={() => setFilter("inbox")}
-              >
-                Inbox
-              </Button>
-              <Button
-                type="button"
-                variant={filter === "unread" ? "secondary" : "ghost"}
-                size="sm"
-                className="h-8 text-xs"
-                onClick={() => setFilter("unread")}
-              >
-                Unread {unreadCount > 0 ? `(${unreadCount})` : ""}
-              </Button>
-              <Button type="button" variant="ghost" size="sm" className="h-8 text-xs" disabled title="Online filter will use realtime presence later">
-                Online
-              </Button>
-            </div>
-
-            <div className="min-h-0 flex-1 overflow-y-auto p-2">
-              {isLoading ? (
-                <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-center">
-                  <p className="text-sm font-medium text-slate-700">Loading conversations...</p>
-                </div>
-              ) : errorMessage ? (
-                <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-center">
-                  <p className="text-sm font-medium text-rose-700">{errorMessage}</p>
-                  <Button type="button" size="sm" variant="outline" className="mt-3" onClick={() => void fetchConversations()}>
-                    Retry
-                  </Button>
-                </div>
-              ) : filteredThreads.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-center">
-                  <p className="text-sm font-medium text-slate-700">No conversations found</p>
-                  <p className="mt-1 text-xs text-slate-500">Try a different search or filter.</p>
-                </div>
-              ) : (
-                <div className="space-y-1">
-                  {filteredThreads.map((thread) => (
-                    <Link
-                      key={thread.id}
-                      href={`/message/t/${thread.id}`}
-                      className="flex items-start gap-3 rounded-xl px-2.5 py-2 transition hover:bg-slate-100"
-                    >
-                      <div className="relative mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-sky-500 to-blue-600 text-sm font-semibold text-white">
-                        {thread.name.charAt(0)}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="truncate text-sm font-semibold text-slate-900">{thread.name}</p>
+                        <span className="shrink-0 text-[11px] text-slate-500">{thread.lastTime}</span>
                       </div>
-
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center justify-between gap-2">
-                          <p className="truncate text-sm font-semibold text-slate-900">{thread.name}</p>
-                          <span className="shrink-0 text-[11px] text-slate-500">{thread.lastTime}</span>
-                        </div>
-                        <div className="mt-0.5 flex items-center justify-between gap-2">
-                          <p className="truncate text-xs text-slate-500">{thread.lastMessage}</p>
-                          <div className="flex shrink-0 items-center gap-1">
-                            {thread.unread > 0 && (
-                              <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-blue-600 px-1.5 text-[11px] font-semibold text-white">
-                                {thread.unread}
-                              </span>
-                            )}
-                          </div>
+                      <div className="mt-0.5 flex items-center justify-between gap-2">
+                        <p className="truncate text-xs text-slate-500">{thread.lastMessage}</p>
+                        <div className="flex shrink-0 items-center gap-1">
+                          {thread.unread > 0 && (
+                            <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-[color:var(--messenger-blue)] px-1.5 text-[11px] font-semibold text-white">
+                              {thread.unread}
+                            </span>
+                          )}
                         </div>
                       </div>
-                    </Link>
-                  ))}
-                </div>
-              )}
-            </div>
-          </aside>
+                    </div>
+                  </Link>
+                ))}
+              </div>
+            )}
+          </MessengerSidebar>
 
-          <section className="hidden h-full min-h-0 flex-col bg-[linear-gradient(180deg,#f8fafc_0%,#f1f5f9_100%)] lg:flex">
+          <section className="hidden h-full min-h-0 flex-col bg-[radial-gradient(circle_at_top,#ffffff_0%,#f1f5f9_45%,#eaf2ff_100%)] animate-[messengerRise_0.5s_ease] lg:flex">
             <div className="border-b border-slate-200/80 bg-white/80 px-5 py-3">
               <p className="text-sm font-semibold text-slate-900">Conversation Preview</p>
               <p className="text-xs text-slate-500">Review the selected chat before opening thread.</p>
@@ -242,8 +229,7 @@ export default function MassegesPage() {
               </div>
             )}
           </section>
-        </div>
-      </div>
+      </MessengerLayout>
 
       {isNewChatOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">

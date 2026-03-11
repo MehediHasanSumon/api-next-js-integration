@@ -1,11 +1,17 @@
 "use client";
 
 import Link from "next/link";
-import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import type { AxiosError } from "axios";
+import { Forward, PencilLine, SmilePlus, Trash2 } from "lucide-react";
 import ProtectedShell from "@/components/ProtectedShell";
 import Button from "@/components/Button";
+import MessengerLayout from "@/components/messenger/MessengerLayout";
+import MessengerSidebar from "@/components/messenger/MessengerSidebar";
+import MessengerHeader from "@/components/messenger/MessengerHeader";
+import MessageBubble from "@/components/messenger/MessageBubble";
+import MessengerInfoPanel from "@/components/messenger/MessengerInfoPanel";
 import {
   archiveConversation,
   forwardMessage,
@@ -124,7 +130,13 @@ interface ApiValidationErrorPayload {
 const TYPING_IDLE_TIMEOUT_MS = 1500;
 const TYPING_TRUE_THROTTLE_MS = 800;
 const REMOVE_EVERYWHERE_WINDOW_MINUTES = 15;
+const MESSAGE_PAGE_LIMIT = 15;
+const LOAD_OLDER_THRESHOLD_PX = 120;
 const REACTION_CHOICES = ["👍", "❤️", "😂", "🔥", "😮", "😢"] as const;
+
+const clampNumber = (value: number, min: number, max: number): number => {
+  return Math.min(Math.max(value, min), max);
+};
 
 const getMessagePreviewText = (message: Message): string => {
   return message.body?.trim() || `[${message.message_type}]`;
@@ -472,8 +484,8 @@ export default function MessageThreadPage() {
   const [archiveActionLoading, setArchiveActionLoading] = useState(false);
   const [echoConnectionStatus, setEchoConnectionStatus] = useState<EchoConnectionStatus>("connecting");
   const [messageActionError, setMessageActionError] = useState<string | null>(null);
-  const [messageActionMenuId, setMessageActionMenuId] = useState<string | null>(null);
   const [reactionModalMessage, setReactionModalMessage] = useState<Message | null>(null);
+  const [reactionPopoverPosition, setReactionPopoverPosition] = useState<{ top: number; left: number } | null>(null);
   const [reactionMutationLoadingKey, setReactionMutationLoadingKey] = useState<string | null>(null);
   const [forwardModalMessage, setForwardModalMessage] = useState<Message | null>(null);
   const [forwardModalConversationId, setForwardModalConversationId] = useState<string>("");
@@ -487,13 +499,17 @@ export default function MessageThreadPage() {
   const [removeModalLoading, setRemoveModalLoading] = useState(false);
   const [removeModalError, setRemoveModalError] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
-  const [editingDraft, setEditingDraft] = useState("");
   const [editingLoading, setEditingLoading] = useState(false);
   const [editingError, setEditingError] = useState<string | null>(null);
   const [draftAttachments, setDraftAttachments] = useState<DraftAttachmentItem[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [isLoadingOlder, setIsLoadingOlder] = useState(false);
+  const [hasMoreOlder, setHasMoreOlder] = useState(true);
 
   const messageViewportRef = useRef<HTMLDivElement | null>(null);
+  const hasInitialScrollRef = useRef(false);
+  const isNearBottomRef = useRef(true);
+  const lastThreadIdRef = useRef<string>("");
   const markReadInFlightRef = useRef(false);
   const lastMarkedMessageIdRef = useRef<number | null>(null);
   const latestMessagesRef = useRef<Message[]>([]);
@@ -509,6 +525,9 @@ export default function MessageThreadPage() {
   const processedRealtimeEventKeysRef = useRef<string[]>([]);
   const processedRealtimeEventLookupRef = useRef<Set<string>>(new Set());
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
+  const composerInputRef = useRef<HTMLInputElement | null>(null);
+  const previousDraftRef = useRef<string>("");
+  const messageBubbleRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   useEffect(() => {
     latestMessagesRef.current = messages;
@@ -539,7 +558,6 @@ export default function MessageThreadPage() {
     setArchiveActionLoading(false);
     setEchoConnectionStatus("connecting");
     setMessageActionError(null);
-    setMessageActionMenuId(null);
     setReactionModalMessage(null);
     setReactionMutationLoadingKey(null);
     setForwardModalMessage(null);
@@ -554,9 +572,9 @@ export default function MessageThreadPage() {
     setRemoveModalError(null);
     setRemoveModalLoading(false);
     setEditingMessageId(null);
-    setEditingDraft("");
     setEditingError(null);
     setEditingLoading(false);
+    previousDraftRef.current = "";
     draftAttachments.forEach((item) => {
       if (item.previewUrl) {
         URL.revokeObjectURL(item.previewUrl);
@@ -564,8 +582,22 @@ export default function MessageThreadPage() {
     });
     setDraftAttachments([]);
     setAttachmentError(null);
+    setIsLoadingOlder(false);
+    setHasMoreOlder(true);
     processedRealtimeEventLookupRef.current.clear();
     processedRealtimeEventKeysRef.current = [];
+    hasInitialScrollRef.current = false;
+    isNearBottomRef.current = true;
+  }, [threadId]);
+
+  useLayoutEffect(() => {
+    if (threadId === lastThreadIdRef.current) {
+      return;
+    }
+
+    lastThreadIdRef.current = threadId;
+    hasInitialScrollRef.current = false;
+    isNearBottomRef.current = true;
   }, [threadId]);
 
   useEffect(() => {
@@ -728,6 +760,7 @@ export default function MessageThreadPage() {
 
   const presenceSubtitleClassName =
     typingIndicatorText || presenceSubtitle.toLowerCase().includes("online") ? "text-emerald-600" : "text-slate-500";
+  const isPresenceOnline = Boolean(typingIndicatorText) || presenceSubtitle.toLowerCase().includes("online");
 
   const unreadCount = useMemo(() => threads.reduce((sum, thread) => sum + thread.unread, 0), [threads]);
   const onlineCount = 0;
@@ -758,26 +791,6 @@ export default function MessageThreadPage() {
     });
   }, [filter, searchQuery, threads]);
 
-  useEffect(() => {
-    if (!messageActionMenuId) {
-      return;
-    }
-
-    const handleClickOutside = (event: MouseEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (target?.closest("[data-message-actions-root]")) {
-        return;
-      }
-
-      setMessageActionMenuId(null);
-    };
-
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => {
-      document.removeEventListener("mousedown", handleClickOutside);
-    };
-  }, [messageActionMenuId]);
-
   const refreshThreads = useCallback(async () => {
     await dispatch(fetchInboxThreads());
   }, [dispatch]);
@@ -797,9 +810,57 @@ export default function MessageThreadPage() {
       return;
     }
 
-    const messageResponse = await listMessages(threadId, { limit: 100 });
+    const messageResponse = await listMessages(threadId, { limit: MESSAGE_PAGE_LIMIT });
     setMessages(sortMessagesAscending(messageResponse.data));
+    setHasMoreOlder(messageResponse.data.length >= MESSAGE_PAGE_LIMIT);
   }, [threadId]);
+
+  const loadOlderMessages = useCallback(async () => {
+    if (!threadId || isLoadingOlder || !hasMoreOlder) {
+      return;
+    }
+
+    const oldestMessageId = getMessageIdAsNumber(messages[0]);
+    if (!oldestMessageId) {
+      return;
+    }
+
+    const viewport = messageViewportRef.current;
+    const previousScrollHeight = viewport?.scrollHeight ?? 0;
+    const previousScrollTop = viewport?.scrollTop ?? 0;
+
+    setIsLoadingOlder(true);
+
+    try {
+      const response = await listMessages(threadId, {
+        limit: MESSAGE_PAGE_LIMIT,
+        before_id: oldestMessageId,
+      });
+
+      if (response.data.length === 0) {
+        setHasMoreOlder(false);
+        return;
+      }
+
+      setHasMoreOlder(response.data.length >= MESSAGE_PAGE_LIMIT);
+
+      setMessages((previous) => {
+        const existingIds = new Set(previous.map((item) => String(item.id)));
+        const older = response.data.filter((item) => !existingIds.has(String(item.id)));
+        return sortMessagesAscending([...older, ...previous]);
+      });
+
+      requestAnimationFrame(() => {
+        if (!viewport) {
+          return;
+        }
+        const newScrollHeight = viewport.scrollHeight;
+        viewport.scrollTop = newScrollHeight - previousScrollHeight + previousScrollTop;
+      });
+    } finally {
+      setIsLoadingOlder(false);
+    }
+  }, [hasMoreOlder, isLoadingOlder, messages, threadId]);
 
   const rememberRealtimeEvent = useCallback((rawKey: string): boolean => {
     if (!rawKey) {
@@ -1024,16 +1085,33 @@ export default function MessageThreadPage() {
     };
   }, [refreshMessages, refreshPresenceSnapshotForUserIds, refreshThreads, threadId]);
 
-  useEffect(() => {
-    if (!messageViewportRef.current) {
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
+    const viewport = messageViewportRef.current;
+    if (!viewport) {
       return;
     }
 
-    messageViewportRef.current.scrollTo({
-      top: messageViewportRef.current.scrollHeight,
-      behavior: "smooth",
+    viewport.scrollTo({
+      top: viewport.scrollHeight,
+      behavior,
     });
-  }, [messages]);
+  }, []);
+
+  useLayoutEffect(() => {
+    const viewport = messageViewportRef.current;
+    if (!viewport || messages.length === 0) {
+      return;
+    }
+
+    const shouldStickToBottom = !hasInitialScrollRef.current || isNearBottomRef.current;
+    if (!shouldStickToBottom) {
+      return;
+    }
+
+    const behavior: ScrollBehavior = hasInitialScrollRef.current ? "smooth" : "auto";
+    scrollToBottom(behavior);
+    hasInitialScrollRef.current = true;
+  }, [messages, scrollToBottom]);
 
   useEffect(() => {
     if (isLoading || messages.length === 0) {
@@ -1147,7 +1225,6 @@ export default function MessageThreadPage() {
         resetLocalTypingRuntimeState();
         clearRemoteTypingIndicators();
         clearStaleOnlinePresenceFlags();
-        setMessageActionMenuId(null);
         setReactionMutationLoadingKey(null);
         setRemoveModalLoading(false);
         setForwardModalLoading(false);
@@ -1377,8 +1454,15 @@ export default function MessageThreadPage() {
     }
 
     const distanceFromBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
-    if (distanceFromBottom <= 80) {
+    const nearBottom = distanceFromBottom <= 80;
+    isNearBottomRef.current = nearBottom;
+
+    if (nearBottom) {
       void markThreadRead();
+    }
+
+    if (viewport.scrollTop <= LOAD_OLDER_THRESHOLD_PX) {
+      void loadOlderMessages();
     }
   };
 
@@ -1540,6 +1624,64 @@ export default function MessageThreadPage() {
 
     if (hasUploadErrors) {
       setSendError("Remove failed attachments before sending.");
+      return;
+    }
+
+    if (editingMessageId) {
+      if (!body) {
+        setEditingError("Message body is required.");
+        return;
+      }
+      if (hasAttachments) {
+        setSendError("Remove attachments before editing a message.");
+        return;
+      }
+
+      if (stopTypingTimerRef.current) {
+        clearTimeout(stopTypingTimerRef.current);
+        stopTypingTimerRef.current = null;
+      }
+      void sendTypingStatus(false);
+
+      setSendError(null);
+      setEditingError(null);
+      setEditingLoading(true);
+
+      try {
+        const response = await updateMessage(editingMessageId, { body });
+        const updatedMessage = response.data;
+
+        setMessages((previous) =>
+          patchMessageById(previous, editingMessageId, (message) => ({
+            ...message,
+            ...updatedMessage,
+            attachments: updatedMessage.attachments ?? message.attachments ?? [],
+            reaction_aggregates: updatedMessage.reaction_aggregates ?? message.reaction_aggregates ?? [],
+            reactions_total: updatedMessage.reactions_total ?? message.reactions_total ?? 0,
+          }))
+        );
+
+        if (String(conversation?.last_message_id ?? "") === editingMessageId) {
+          dispatch(
+            patchThread({
+              id: threadId,
+              changes: {
+                lastMessage: updatedMessage.body?.trim() || `[${updatedMessage.message_type}]`,
+                lastTime: "now",
+              },
+            })
+          );
+        }
+
+        cancelEditingMessage();
+      } catch (error) {
+        const axiosError = error as AxiosError<ApiValidationErrorPayload>;
+        const firstError = Object.values(axiosError.response?.data?.errors ?? {})[0]?.[0];
+        setEditingError(firstError || axiosError.response?.data?.message || "Failed to update message.");
+      } finally {
+        setEditingLoading(false);
+      }
+
       return;
     }
 
@@ -1729,13 +1871,25 @@ export default function MessageThreadPage() {
   };
 
   const openReactionModal = (message: Message) => {
-    setMessageActionMenuId(null);
     setMessageActionError(null);
     setReactionModalMessage(message);
+    const messageIdKey = String(message.id);
+    const bubble = messageBubbleRefs.current[messageIdKey];
+    if (bubble) {
+      const rect = bubble.getBoundingClientRect();
+      const centerX = rect.left + rect.width / 2;
+      const left = clampNumber(centerX, 40, window.innerWidth - 40);
+      const top = Math.max(8, rect.top);
+      setReactionPopoverPosition({ top, left });
+    } else {
+      setReactionPopoverPosition({
+        top: Math.round(window.innerHeight / 2),
+        left: Math.round(window.innerWidth / 2),
+      });
+    }
   };
 
   const openForwardModal = (message: Message) => {
-    setMessageActionMenuId(null);
     setMessageActionError(null);
     setForwardModalMessage(message);
     setForwardModalComment("");
@@ -1744,7 +1898,6 @@ export default function MessageThreadPage() {
   };
 
   const openRemoveModal = (message: Message) => {
-    setMessageActionMenuId(null);
     setMessageActionError(null);
     setRemoveModalMessage(message);
     setRemoveModalMode("for_you");
@@ -1758,23 +1911,30 @@ export default function MessageThreadPage() {
       return;
     }
 
-    setMessageActionMenuId(null);
     setMessageActionError(null);
     setEditingMessageId(String(message.id));
-    setEditingDraft(message.body ?? "");
     setEditingError(null);
+    previousDraftRef.current = draft;
+    setDraft(message.body ?? "");
+
+    requestAnimationFrame(() => {
+      composerInputRef.current?.focus();
+      composerInputRef.current?.select();
+    });
   };
 
   const cancelEditingMessage = () => {
     setEditingMessageId(null);
-    setEditingDraft("");
     setEditingError(null);
     setEditingLoading(false);
+    setDraft(previousDraftRef.current);
+    previousDraftRef.current = "";
   };
 
   const closeReactionModal = () => {
     setReactionModalMessage(null);
     setReactionMutationLoadingKey(null);
+    setReactionPopoverPosition(null);
   };
 
   const closeForwardModal = () => {
@@ -1789,56 +1949,6 @@ export default function MessageThreadPage() {
     setRemoveModalLoading(false);
     setRemoveModalError(null);
     setRemoveModalMode("for_you");
-  };
-
-  const handleEditSave = async () => {
-    if (!editingMessageId || !threadId) {
-      return;
-    }
-
-    const nextBody = editingDraft.trim();
-    if (nextBody === "") {
-      setEditingError("Message body is required.");
-      return;
-    }
-
-    setEditingLoading(true);
-    setEditingError(null);
-
-    try {
-      const response = await updateMessage(editingMessageId, { body: nextBody });
-      const updatedMessage = response.data;
-
-      setMessages((previous) =>
-        patchMessageById(previous, editingMessageId, (message) => ({
-          ...message,
-          ...updatedMessage,
-          attachments: updatedMessage.attachments ?? message.attachments ?? [],
-          reaction_aggregates: updatedMessage.reaction_aggregates ?? message.reaction_aggregates ?? [],
-          reactions_total: updatedMessage.reactions_total ?? message.reactions_total ?? 0,
-        }))
-      );
-
-      if (String(conversation?.last_message_id ?? "") === editingMessageId) {
-        dispatch(
-          patchThread({
-            id: threadId,
-            changes: {
-              lastMessage: updatedMessage.body?.trim() || `[${updatedMessage.message_type}]`,
-              lastTime: "now",
-            },
-          })
-        );
-      }
-
-      cancelEditingMessage();
-    } catch (error) {
-      const axiosError = error as AxiosError<{ errors?: Record<string, string[]>; message?: string }>;
-      const firstError = Object.values(axiosError.response?.data?.errors ?? {})[0]?.[0];
-      setEditingError(firstError || axiosError.response?.data?.message || "Failed to update message.");
-    } finally {
-      setEditingLoading(false);
-    }
   };
 
   const uploadDraftAttachment = async (conversationId: string, itemId: string, file: File) => {
@@ -2082,136 +2192,115 @@ export default function MessageThreadPage() {
       description={`${activeThread?.name ?? "Conversation"} conversation`}
       showPageHeader={false}
     >
-      <div className="overflow-hidden rounded-2xl border border-white/70 bg-white/90">
-        <div
-          className={`grid h-[calc(100dvh-7.8rem)] min-h-[560px] grid-cols-1 transition-[grid-template-columns] duration-300 ease-in-out ${
-            showInfoPanel ? "lg:grid-cols-[320px_minmax(0,1fr)_280px]" : "lg:grid-cols-[320px_minmax(0,1fr)_0px]"
-          }`}
-        >
-          <aside className="flex min-h-0 h-full flex-col border-r border-slate-200/80 bg-white/85">
-            <div className="border-b border-slate-200/80 px-4 py-3">
-              <div className="mb-3 flex items-center justify-between">
-                <h2 className="text-sm font-semibold text-slate-900">Chats</h2>
-                <Link href="/masseges" className="text-xs font-medium text-blue-600 hover:text-blue-700">
-                  Inbox
-                </Link>
+      <MessengerLayout showInfo={showInfoPanel}>
+          <MessengerSidebar
+            title="Chats"
+            action={
+              <Link
+                href="/masseges"
+                className="inline-flex items-center rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-600 shadow-sm hover:bg-slate-100"
+              >
+                Inbox
+              </Link>
+            }
+            searchValue={searchQuery}
+            onSearchChange={setSearchQuery}
+            filters={
+              <div className="grid grid-cols-3 gap-1">
+                <Button type="button" variant={filter === "all" ? "secondary" : "ghost"} size="sm" className="h-8 rounded-full text-xs" onClick={() => setFilter("all")}>
+                  All
+                </Button>
+                <Button type="button" variant={filter === "unread" ? "secondary" : "ghost"} size="sm" className="h-8 rounded-full text-xs" onClick={() => setFilter("unread")}>
+                  Unread {unreadCount > 0 ? `(${unreadCount})` : ""}
+                </Button>
+                <Button type="button" variant="ghost" size="sm" className="h-8 rounded-full text-xs" disabled title="Online filter will use realtime presence later">
+                  Online ({onlineCount})
+                </Button>
               </div>
-
-              <div className="relative">
-                <svg className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-4.35-4.35M10.5 18a7.5 7.5 0 100-15 7.5 7.5 0 000 15z" />
-                </svg>
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(event) => setSearchQuery(event.target.value)}
-                  placeholder="Search conversations"
-                  className="h-10 w-full rounded-md border border-slate-300 bg-white pl-9 pr-3 text-sm text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-200"
-                />
+            }
+          >
+            {filteredThreads.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-slate-200 bg-white/80 p-4 text-center">
+                <p className="text-sm font-medium text-slate-700">No conversations found</p>
+                <p className="mt-1 text-xs text-slate-500">Try a different search or filter.</p>
               </div>
-            </div>
+            ) : (
+              <div className="space-y-1">
+                {filteredThreads.map((thread) => {
+                  const active = thread.id === threadId;
 
-            <div className="grid grid-cols-3 gap-1 border-b border-slate-200/80 p-2">
-              <Button type="button" variant={filter === "all" ? "secondary" : "ghost"} size="sm" className="h-8 text-xs" onClick={() => setFilter("all")}>
-                All
-              </Button>
-              <Button type="button" variant={filter === "unread" ? "secondary" : "ghost"} size="sm" className="h-8 text-xs" onClick={() => setFilter("unread")}>
-                Unread {unreadCount > 0 ? `(${unreadCount})` : ""}
-              </Button>
-              <Button type="button" variant="ghost" size="sm" className="h-8 text-xs" disabled title="Online filter will use realtime presence later">
-                Online ({onlineCount})
-              </Button>
-            </div>
+                  return (
+                    <Link
+                      key={thread.id}
+                      href={`/message/t/${thread.id}`}
+                      className={`group flex items-start gap-3 rounded-2xl px-3 py-2 transition ${
+                        active ? "bg-[color:var(--messenger-soft)] ring-1 ring-slate-200" : "hover:bg-slate-100/80"
+                      }`}
+                    >
+                      <div className="relative mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-sky-500 to-blue-600 text-sm font-semibold text-white">
+                        {thread.name.charAt(0)}
+                      </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto p-2">
-              {filteredThreads.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-center">
-                  <p className="text-sm font-medium text-slate-700">No conversations found</p>
-                  <p className="mt-1 text-xs text-slate-500">Try a different search or filter.</p>
-                </div>
-              ) : (
-                <div className="space-y-1">
-                  {filteredThreads.map((thread) => {
-                    const active = thread.id === threadId;
-
-                    return (
-                      <Link
-                        key={thread.id}
-                        href={`/message/t/${thread.id}`}
-                        className={`flex items-start gap-3 rounded-xl px-2.5 py-2 transition ${
-                          active ? "bg-blue-50 ring-1 ring-blue-100" : "hover:bg-slate-100"
-                        }`}
-                      >
-                        <div className="relative mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-sky-500 to-blue-600 text-sm font-semibold text-white">
-                          {thread.name.charAt(0)}
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="truncate text-sm font-semibold text-slate-900">{thread.name}</p>
+                          <span className="shrink-0 text-[11px] text-slate-500">{thread.lastTime}</span>
                         </div>
-
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center justify-between gap-2">
-                            <p className="truncate text-sm font-semibold text-slate-900">{thread.name}</p>
-                            <span className="shrink-0 text-[11px] text-slate-500">{thread.lastTime}</span>
-                          </div>
-                          <div className="mt-0.5 flex items-center justify-between gap-2">
-                            <p className="truncate text-xs text-slate-500">{thread.lastMessage}</p>
-                            {thread.unread > 0 && (
-                              <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-blue-600 px-1.5 text-[11px] font-semibold text-white">
-                                {thread.unread}
-                              </span>
-                            )}
-                          </div>
+                        <div className="mt-0.5 flex items-center justify-between gap-2">
+                          <p className="truncate text-xs text-slate-500">{thread.lastMessage}</p>
+                          {thread.unread > 0 && (
+                            <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-[color:var(--messenger-blue)] px-1.5 text-[11px] font-semibold text-white">
+                              {thread.unread}
+                            </span>
+                          )}
                         </div>
-                      </Link>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          </aside>
-
-          <section className={`flex h-full min-h-0 flex-col bg-[linear-gradient(180deg,#f8fafc_0%,#f1f5f9_100%)] ${showInfoPanel ? "border-r border-slate-200/80" : ""}`}>
-            <div className="flex items-center justify-between border-b border-slate-200/80 bg-white/85 px-4 py-3">
-              <div className="flex items-center gap-3">
-                <div className="relative flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-sky-500 to-blue-600 text-sm font-semibold text-white">
-                  {activeThread?.name?.charAt(0) ?? "?"}
-                </div>
-                <div>
-                  <p className="text-sm font-semibold text-slate-900">{activeThread?.name ?? "Conversation"}</p>
-                  <p className={`text-xs ${presenceSubtitleClassName}`}>
-                    {presenceSubtitle}
-                  </p>
-                </div>
+                      </div>
+                    </Link>
+                  );
+                })}
               </div>
+            )}
+          </MessengerSidebar>
 
-              <div className="flex items-center gap-1">
-                <Button type="button" variant="ghost" size="icon" className="text-slate-500" aria-label="Start call">
-                  <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 10l4.55-2.28A1 1 0 0121 8.62v6.76a1 1 0 01-1.45.9L15 14M5 19h8a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                  </svg>
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-8 px-3 text-xs"
-                  onClick={() => void handleArchiveToggle()}
-                  disabled={archiveActionLoading || isLoading || !participant}
-                >
-                  {archiveActionLoading ? "Saving..." : isArchivedThread ? "Unarchive" : "Archive"}
-                </Button>
-                <Button
-                  type="button"
-                  variant={showInfoPanel ? "outline" : "ghost"}
-                  size="icon"
-                  className="text-slate-500"
-                  onClick={() => setShowInfoPanel((previous) => !previous)}
-                  aria-label="Toggle contact info"
-                >
-                  <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                </Button>
-              </div>
-            </div>
+          <section className={`flex h-full min-h-0 flex-col bg-[radial-gradient(circle_at_top,#ffffff_0%,#f1f5f9_45%,#eaf2ff_100%)] animate-[messengerRise_0.5s_ease] ${showInfoPanel ? "border-r border-slate-200/80" : ""}`}>
+            <MessengerHeader
+              title={activeThread?.name ?? "Conversation"}
+              subtitle={presenceSubtitle}
+              subtitleClassName={presenceSubtitleClassName}
+              avatarText={activeThread?.name?.charAt(0) ?? "?"}
+              isOnline={isPresenceOnline}
+              actions={
+                <>
+                  <Button type="button" variant="ghost" size="icon" className="rounded-full text-slate-500" aria-label="Start call">
+                    <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 10l4.55-2.28A1 1 0 0121 8.62v6.76a1 1 0 01-1.45.9L15 14M5 19h8a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                    </svg>
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 rounded-full px-3 text-xs"
+                    onClick={() => void handleArchiveToggle()}
+                    disabled={archiveActionLoading || isLoading || !participant}
+                  >
+                    {archiveActionLoading ? "Saving..." : isArchivedThread ? "Unarchive" : "Archive"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={showInfoPanel ? "outline" : "ghost"}
+                    size="icon"
+                    className="rounded-full text-slate-500"
+                    onClick={() => setShowInfoPanel((previous) => !previous)}
+                    aria-label="Toggle contact info"
+                  >
+                    <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  </Button>
+                </>
+              }
+            />
 
             {echoConnectionStatus !== "connected" && (
               <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-700">
@@ -2231,7 +2320,11 @@ export default function MessageThreadPage() {
               </div>
             )}
 
-            <div ref={messageViewportRef} onScroll={handleMessageScroll} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4">
+            <div
+              ref={messageViewportRef}
+              onScroll={handleMessageScroll}
+              className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4"
+            >
               {isLoading ? (
                 <div className="mx-auto mt-10 max-w-sm rounded-xl border border-slate-200 bg-white px-4 py-3 text-center text-sm text-slate-600">
                   Loading conversation...
@@ -2242,7 +2335,16 @@ export default function MessageThreadPage() {
                 </div>
               ) : (
                 <>
-                  <div className="mx-auto w-fit rounded-full bg-white px-3 py-1 text-[11px] font-medium text-slate-500 ring-1 ring-slate-200">
+                  {messages.length > 0 && (
+                    <div className="mx-auto w-fit rounded-full border border-slate-200 bg-white/90 px-3 py-1 text-[11px] font-medium text-slate-500 shadow-sm">
+                      {isLoadingOlder
+                        ? "Loading older messages..."
+                        : hasMoreOlder
+                          ? "Scroll up to load older messages"
+                          : "Start of conversation"}
+                    </div>
+                  )}
+                  <div className="mx-auto w-fit rounded-full bg-white/90 px-3 py-1 text-[11px] font-semibold text-slate-500 shadow-sm ring-1 ring-slate-200/80">
                     Messages
                   </div>
 
@@ -2279,120 +2381,88 @@ export default function MessageThreadPage() {
                         (message.attachments && message.attachments.length > 0
                           ? "Sent attachment"
                           : `[${message.message_type}]`);
+                      const isSystemMessage = isRemovedForEveryone || message.message_type === "system";
+                      const senderInitial =
+                        message.sender?.name?.trim().charAt(0) ||
+                        message.sender?.email?.trim().charAt(0) ||
+                        counterpart?.name?.trim().charAt(0) ||
+                        "?";
 
                       return (
-                        <div key={messageIdKey} className={`group relative flex ${isMine ? "justify-end" : "justify-start"}`}>
-                          <div className="relative max-w-[82%]">
+                        <div key={messageIdKey} className={`group relative flex items-end gap-2 ${isMine ? "justify-end" : "justify-start"}`}>
+                          {!isMine && (
+                            <div className="mb-6 flex h-8 w-8 items-center justify-center rounded-full bg-slate-200 text-xs font-semibold text-slate-600">
+                              {senderInitial}
+                            </div>
+                          )}
+                          <div className="relative max-w-[78%]">
                             {hasAnyAction && (
                               <div
                                 className={`absolute top-1 z-20 ${isMine ? "left-0 -translate-x-full pr-2" : "right-0 translate-x-full pl-2"}`}
-                                data-message-actions-root
                               >
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-7 w-7 border border-slate-200 bg-white text-slate-600 shadow-sm opacity-100 transition md:opacity-0 md:group-hover:opacity-100"
-                                  onClick={() => setMessageActionMenuId((previous) => (previous === messageIdKey ? null : messageIdKey))}
-                                  aria-label="Message actions"
-                                >
-                                  <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 5h.01M12 12h.01M12 19h.01" />
-                                  </svg>
-                                </Button>
-
-                                {messageActionMenuId === messageIdKey && (
-                                  <div className={`mt-1 w-44 rounded-lg border border-slate-200 bg-white p-1 shadow-lg ${isMine ? "origin-top-right" : "origin-top-left"}`}>
-                                    {canForwardMessage && (
-                                      <button
-                                        type="button"
-                                        className="w-full rounded-md px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-100"
-                                        onClick={() => openForwardModal(message)}
-                                      >
-                                        Forward
-                                      </button>
-                                    )}
-                                    {canEditMessage && (
-                                      <button
-                                        type="button"
-                                        className="w-full rounded-md px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-100"
-                                        onClick={() => startEditingMessage(message)}
-                                      >
-                                        Edit
-                                      </button>
-                                    )}
-                                    {canReactMessage && (
-                                      <button
-                                        type="button"
-                                        className="w-full rounded-md px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-100"
-                                        onClick={() => openReactionModal(message)}
-                                      >
-                                        React
-                                      </button>
-                                    )}
-                                    {(canRemoveForYou || canRemoveEverywhere) && (
-                                      <button
-                                        type="button"
-                                        className="w-full rounded-md px-3 py-2 text-left text-xs font-medium text-rose-600 hover:bg-rose-50"
-                                        onClick={() => openRemoveModal(message)}
-                                      >
-                                        Remove
-                                      </button>
-                                    )}
-                                  </div>
-                                )}
+                                <div className="flex items-center gap-1 rounded-full border border-slate-200 bg-white/90 px-1 py-1 shadow-sm opacity-100 transition md:opacity-0 md:group-hover:opacity-100">
+                                  {canForwardMessage && (
+                                    <button
+                                      type="button"
+                                      className="inline-flex h-7 w-7 items-center justify-center rounded-full text-slate-600 hover:bg-slate-100"
+                                      onClick={() => openForwardModal(message)}
+                                      aria-label="Forward message"
+                                    >
+                                      <Forward className="h-4 w-4" />
+                                    </button>
+                                  )}
+                                  {canEditMessage && (
+                                    <button
+                                      type="button"
+                                      className="inline-flex h-7 w-7 items-center justify-center rounded-full text-slate-600 hover:bg-slate-100"
+                                      onClick={() => startEditingMessage(message)}
+                                      aria-label="Edit message"
+                                    >
+                                      <PencilLine className="h-4 w-4" />
+                                    </button>
+                                  )}
+                                  {canReactMessage && (
+                                    <button
+                                      type="button"
+                                      className="inline-flex h-7 w-7 items-center justify-center rounded-full text-slate-600 hover:bg-slate-100"
+                                      onClick={() => openReactionModal(message)}
+                                      aria-label="React to message"
+                                    >
+                                      <SmilePlus className="h-4 w-4" />
+                                    </button>
+                                  )}
+                                  {(canRemoveForYou || canRemoveEverywhere) && (
+                                    <button
+                                      type="button"
+                                      className="inline-flex h-7 w-7 items-center justify-center rounded-full text-rose-600 hover:bg-rose-50"
+                                      onClick={() => openRemoveModal(message)}
+                                      aria-label="Remove message"
+                                    >
+                                      <Trash2 className="h-4 w-4" />
+                                    </button>
+                                  )}
+                                </div>
                               </div>
                             )}
 
                             <div
-                              className={`rounded-2xl px-3 py-2 ${
-                                isMine
-                                  ? "rounded-br-md bg-blue-600 text-white"
-                                  : "rounded-bl-md border border-slate-200 bg-white text-slate-800"
-                              }`}
+                              ref={(node) => {
+                                messageBubbleRefs.current[messageIdKey] = node;
+                              }}
+                              className="relative inline-block"
                             >
+                              <MessageBubble isMine={isMine} isSystem={isSystemMessage} className={isSystemMessage ? "italic" : ""}>
                               {(message.forwarded_from_message_id || message.forwarded_snapshot) && (
-                                <p className={`mb-1 text-[11px] font-medium ${isMine ? "text-blue-100" : "text-slate-500"}`}>Forwarded</p>
+                                <p
+                                  className={`mb-1 text-[11px] font-semibold uppercase tracking-wide ${
+                                    isSystemMessage ? "text-amber-700" : isMine ? "text-blue-100" : "text-slate-500"
+                                  }`}
+                                >
+                                  Forwarded
+                                </p>
                               )}
 
-                              {isEditing ? (
-                                <div className="space-y-2">
-                                  <textarea
-                                    value={editingDraft}
-                                    onChange={(event) => setEditingDraft(event.target.value)}
-                                    rows={3}
-                                    disabled={editingLoading}
-                                    className={`w-full resize-none rounded-md border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200 ${
-                                      isMine
-                                        ? "border-blue-400/60 bg-blue-500/20 text-white placeholder:text-blue-100"
-                                        : "border-slate-200 bg-white text-slate-800"
-                                    }`}
-                                  />
-                                  {editingError && <p className={`text-xs ${isMine ? "text-blue-100" : "text-rose-600"}`}>{editingError}</p>}
-                                  <div className="flex justify-end gap-2">
-                                    <Button
-                                      type="button"
-                                      size="sm"
-                                      variant="outline"
-                                      onClick={cancelEditingMessage}
-                                      disabled={editingLoading}
-                                    >
-                                      Cancel
-                                    </Button>
-                                    <Button
-                                      type="button"
-                                      size="sm"
-                                      onClick={() => void handleEditSave()}
-                                      disabled={editingLoading || editingDraft.trim() === ""}
-                                      loading={editingLoading}
-                                    >
-                                      Save
-                                    </Button>
-                                  </div>
-                                </div>
-                              ) : (
-                                <p className={`text-sm leading-relaxed ${isRemovedForEveryone ? "italic opacity-85" : ""}`}>{messageText}</p>
-                              )}
+                              <p className={`text-sm leading-relaxed ${isRemovedForEveryone ? "italic opacity-85" : ""}`}>{messageText}</p>
 
                               {message.attachments && message.attachments.length > 0 && (
                                 <div className="mt-2 space-y-1.5">
@@ -2404,7 +2474,7 @@ export default function MessageThreadPage() {
                                     return (
                                       <div
                                         key={String(attachment.id)}
-                                        className={`flex items-center gap-2 rounded-lg px-2 py-1 ${isMine ? "bg-blue-500/30" : "bg-slate-100"}`}
+                                        className={`flex items-center gap-2 rounded-lg px-2 py-1 ${isMine ? "bg-white/20" : "bg-slate-100"}`}
                                       >
                                         {isImageAttachment && attachmentUrl ? (
                                           <a
@@ -2421,7 +2491,7 @@ export default function MessageThreadPage() {
                                           </a>
                                         ) : (
                                           <>
-                                            <span className={`inline-flex h-5 w-5 items-center justify-center rounded ${isMine ? "bg-blue-400/50 text-white" : "bg-white text-slate-600"}`}>
+                                            <span className={`inline-flex h-5 w-5 items-center justify-center rounded ${isMine ? "bg-white/30 text-white" : "bg-white text-slate-600"}`}>
                                               {isImageAttachment ? (
                                                 <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
                                                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-8h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
@@ -2454,8 +2524,15 @@ export default function MessageThreadPage() {
                                 </div>
                               )}
 
-                              {!isEditing && Array.isArray(message.reaction_aggregates) && message.reaction_aggregates.length > 0 && (
-                                <div className={`mt-2 flex flex-wrap gap-1 ${isMine ? "justify-end" : "justify-start"}`}>
+                              <p className={`mt-1 text-[11px] ${isMine ? "text-blue-100/80" : "text-slate-500"}`}>
+                                {isOptimistic ? "Sending..." : `${formatClockTime(message.created_at)}${editedLabel}`}
+                              </p>
+                              </MessageBubble>
+                            </div>
+
+                            {!isEditing && Array.isArray(message.reaction_aggregates) && message.reaction_aggregates.length > 0 && (
+                              <div className={`mt-1 flex ${isMine ? "justify-end" : "justify-start"}`}>
+                                <div className="flex flex-wrap gap-1">
                                   {message.reaction_aggregates.map((aggregate) => (
                                     <button
                                       key={`${messageIdKey}-${aggregate.emoji}`}
@@ -2466,7 +2543,7 @@ export default function MessageThreadPage() {
                                         }
                                         openReactionModal(message);
                                       }}
-                                      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] ${
+                                      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] shadow-sm ${
                                         aggregate.reacted_by_me
                                           ? isMine
                                             ? "border-blue-200 bg-blue-500/30 text-white"
@@ -2481,12 +2558,8 @@ export default function MessageThreadPage() {
                                     </button>
                                   ))}
                                 </div>
-                              )}
-
-                              <p className={`mt-1 text-[11px] ${isMine ? "text-blue-100" : "text-slate-500"}`}>
-                                {isOptimistic ? "Sending..." : `${formatClockTime(message.created_at)}${editedLabel}`}
-                              </p>
-                            </div>
+                              </div>
+                            )}
                           </div>
                         </div>
                       );
@@ -2496,8 +2569,9 @@ export default function MessageThreadPage() {
               )}
             </div>
 
-            <form onSubmit={handleSend} className="border-t border-slate-200/80 bg-white px-4 py-3">
+            <form onSubmit={handleSend} className="border-t border-slate-200/80 bg-white/95 px-4 py-3 backdrop-blur">
               {sendError && <p className="mb-2 text-xs text-rose-600">{sendError}</p>}
+              {editingError && <p className="mb-2 text-xs text-rose-600">{editingError}</p>}
               {attachmentError && <p className="mb-2 text-xs text-rose-600">{attachmentError}</p>}
               {messageActionError && <p className="mb-2 text-xs text-rose-600">{messageActionError}</p>}
               {requestActionError && <p className="mb-2 text-xs text-rose-600">{requestActionError}</p>}
@@ -2511,6 +2585,7 @@ export default function MessageThreadPage() {
                     size="sm"
                     variant="secondary"
                     disabled={requestActionLoading !== null}
+                    className="rounded-full"
                     onClick={() => void handleRequestAction("accept")}
                   >
                     {requestActionLoading === "accept" ? "Accepting..." : "Accept"}
@@ -2520,6 +2595,7 @@ export default function MessageThreadPage() {
                     size="sm"
                     variant="outline"
                     disabled={requestActionLoading !== null}
+                    className="rounded-full"
                     onClick={() => void handleRequestAction("decline")}
                   >
                     {requestActionLoading === "decline" ? "Declining..." : "Decline"}
@@ -2530,10 +2606,14 @@ export default function MessageThreadPage() {
               {!canSendMessage && !isPendingThread && !isDeclinedThread && (
                 <p className="mb-2 text-xs text-slate-500">You can send messages after the request is accepted.</p>
               )}
-              {lastReadEvent && (
-                <p className="mb-2 text-xs text-slate-500">
-                  Seen {formatRelativeTime(lastReadEvent.read_at)} (message #{lastReadEvent.last_read_message_id})
-                </p>
+
+              {editingMessageId && (
+                <div className="mb-2 flex items-center justify-between rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
+                  <span>Editing message</span>
+                  <button type="button" className="text-blue-600 hover:text-blue-800" onClick={cancelEditingMessage}>
+                    Cancel
+                  </button>
+                </div>
               )}
 
               {draftAttachments.length > 0 && (
@@ -2542,7 +2622,7 @@ export default function MessageThreadPage() {
                     const isImage = item.previewUrl !== null;
 
                     return (
-                      <div key={item.id} className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700">
+                      <div key={item.id} className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white/90 px-2 py-1 text-xs text-slate-700 shadow-sm">
                         {isImage ? (
                           <img src={item.previewUrl ?? ""} alt={item.file.name} className="h-10 w-10 rounded-md object-cover" />
                         ) : (
@@ -2589,14 +2669,19 @@ export default function MessageThreadPage() {
                 />
                 <Button
                   type="button"
-                  size="sm"
-                  variant="outline"
+                  size="icon"
+                  variant="ghost"
+                  className="rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200"
                   onClick={() => attachmentInputRef.current?.click()}
-                  disabled={!canSendMessage || isLoading || hasAttachmentUploadsInProgress}
+                  disabled={!canSendMessage || isLoading || hasAttachmentUploadsInProgress || Boolean(editingMessageId) || editingLoading}
+                  aria-label="Attach file"
                 >
-                  Attach
+                  <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14.752 11.168l-6.518 6.518a4 4 0 105.657 5.657l7.07-7.071a6 6 0 10-8.485-8.485l-7.07 7.071a8 8 0 1011.314 11.314l6.518-6.518" />
+                  </svg>
                 </Button>
                 <input
+                  ref={composerInputRef}
                   type="text"
                   value={draft}
                   onChange={handleDraftChange}
@@ -2608,31 +2693,29 @@ export default function MessageThreadPage() {
                     void sendTypingStatus(false);
                   }}
                   placeholder="Type a message..."
-                  className="h-10 flex-1 rounded-full border border-slate-300 bg-white px-4 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-200"
-                  disabled={!canSendMessage || isLoading}
+                  className="h-10 flex-1 rounded-full border border-slate-200 bg-slate-100 px-4 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[color:var(--messenger-blue)]/30"
+                  disabled={!canSendMessage || isLoading || editingLoading}
                 />
                 <Button
                   type="submit"
                   size="md"
-                  className="rounded-full px-4"
-                  disabled={!canSendMessage || isLoading || isSending || (draft.trim() === "" && draftAttachments.length === 0)}
+                  className="rounded-full px-4 shadow-sm"
+                  disabled={
+                    !canSendMessage ||
+                    isLoading ||
+                    isSending ||
+                    editingLoading ||
+                    (draft.trim() === "" && draftAttachments.length === 0)
+                  }
                 >
-                  {isSending ? "Sending..." : "Send"}
+                  {editingLoading ? "Saving..." : isSending ? "Sending..." : editingMessageId ? "Save" : "Send"}
                 </Button>
               </div>
             </form>
           </section>
 
-          <aside
-            className={`hidden min-h-0 h-full flex-col overflow-hidden bg-white/85 transition-all duration-300 ease-in-out lg:flex ${
-              showInfoPanel ? "opacity-100 translate-x-0" : "pointer-events-none opacity-0 translate-x-2"
-            }`}
-          >
-            <div className="border-b border-slate-200/80 px-4 py-4">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Contact Info</p>
-            </div>
-
-            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
+          <MessengerInfoPanel show={showInfoPanel} title="Details">
+            <div className="space-y-4">
               <div className="rounded-xl border border-slate-200 bg-white p-4 text-center">
                 <div className="relative mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-br from-sky-500 to-blue-600 text-lg font-semibold text-white">
                   {(counterpart?.name || activeThread?.name || "?").charAt(0)}
@@ -2661,49 +2744,44 @@ export default function MessageThreadPage() {
                 </Button>
               </div>
             </div>
-          </aside>
-        </div>
-      </div>
+          </MessengerInfoPanel>
+      </MessengerLayout>
 
       {reactionModalMessage && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50">
           <button
             type="button"
-            className="absolute inset-0 bg-slate-900/50"
+            className="absolute inset-0 bg-slate-900/30"
             aria-label="Close reaction modal"
             onClick={reactionMutationLoadingKey ? undefined : closeReactionModal}
           />
-          <div className="relative w-full max-w-md rounded-2xl border border-white/60 bg-white p-5 shadow-2xl">
-            <h2 className="text-base font-semibold text-slate-900">React to Message</h2>
-            <p className="mt-2 rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-600">
-              {reactionModalMessage.body?.trim() || `[${reactionModalMessage.message_type}]`}
-            </p>
-
-            <div className="mt-4 grid grid-cols-3 gap-2">
+          <div
+            className="absolute z-50 w-auto max-w-[90vw] -translate-x-1/2 -translate-y-full rounded-full border border-slate-200 bg-white px-2 py-1 shadow-xl"
+            style={
+              reactionPopoverPosition
+                ? { top: reactionPopoverPosition.top, left: reactionPopoverPosition.left }
+                : { top: "50%", left: "50%" }
+            }
+          >
+            <div className="flex items-center gap-1">
               {REACTION_CHOICES.map((emoji) => {
                 const loading = reactionMutationLoadingKey === `${String(reactionModalMessage.id)}:${emoji}`;
 
                 return (
-                  <Button
+                  <button
                     key={emoji}
                     type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-10 text-lg"
+                    className={`flex h-9 w-9 items-center justify-center rounded-full text-lg transition ${
+                      loading ? "bg-slate-100 opacity-60" : "hover:bg-slate-100"
+                    }`}
                     disabled={Boolean(reactionMutationLoadingKey)}
-                    loading={loading}
                     onClick={() => void handleReactionToggle(emoji)}
+                    aria-label={`React with ${emoji}`}
                   >
                     {emoji}
-                  </Button>
+                  </button>
                 );
               })}
-            </div>
-
-            <div className="mt-5 flex justify-end">
-              <Button type="button" variant="ghost" size="sm" onClick={closeReactionModal} disabled={Boolean(reactionMutationLoadingKey)}>
-                Close
-              </Button>
             </div>
           </div>
         </div>
