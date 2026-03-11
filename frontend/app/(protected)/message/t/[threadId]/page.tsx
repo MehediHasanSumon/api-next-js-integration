@@ -2823,12 +2823,12 @@ export default function MessageThreadPage() {
             aria-label="Close forward modal"
             onClick={forwardModalLoading ? undefined : closeForwardModal}
           />
-          <div className="relative w-full max-w-md overflow-hidden rounded-2xl border border-white/10 bg-slate-900 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
-              <h2 className="text-base font-semibold text-slate-100">Forward</h2>
+          <div className="relative w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+              <h2 className="text-base font-semibold text-slate-900">Forward</h2>
               <button
                 type="button"
-                className="flex h-8 w-8 items-center justify-center rounded-full bg-white/5 text-slate-200 transition hover:bg-white/10"
+                className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition hover:bg-slate-200"
                 onClick={forwardModalLoading ? undefined : closeForwardModal}
                 disabled={forwardModalLoading}
                 aria-label="Close forward modal"
@@ -2839,26 +2839,26 @@ export default function MessageThreadPage() {
 
             <div className="px-5 py-4">
               <div className="relative">
-                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
                 <input
                   value={forwardSearch}
                   onChange={(event) => setForwardSearch(event.target.value)}
                   placeholder="Search for people and groups"
-                  className="h-10 w-full rounded-full border border-white/10 bg-white/5 pl-9 pr-3 text-sm text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+                  className="h-10 w-full rounded-full border border-slate-200 bg-slate-100 pl-9 pr-3 text-sm text-slate-800 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-[color:var(--messenger-blue)]/30"
                   disabled={forwardModalLoading}
                 />
               </div>
 
-              <div className="mt-4 flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-400">
+              <div className="mt-4 flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-500">
                 <span>Contacts</span>
                 <span>{filteredForwardTargets.length}</span>
               </div>
 
               <div className="mt-3 max-h-[360px] space-y-2 overflow-y-auto pr-1">
                 {forwardTargetsLoading ? (
-                  <p className="text-sm text-slate-400">Loading contacts...</p>
+                  <p className="text-sm text-slate-500">Loading contacts...</p>
                 ) : filteredForwardTargets.length === 0 ? (
-                  <p className="text-sm text-slate-400">No contacts found.</p>
+                  <p className="text-sm text-slate-500">No contacts found.</p>
                 ) : (
                   filteredForwardTargets.map((target) => {
                     const label =
@@ -2876,10 +2876,10 @@ export default function MessageThreadPage() {
                     return (
                       <div
                         key={targetId}
-                        className="flex items-center justify-between gap-3 rounded-xl border border-white/5 bg-white/5 px-3 py-2"
+                        className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2"
                       >
                         <div className="flex min-w-0 items-center gap-3">
-                          <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-full bg-slate-700 text-sm font-semibold text-slate-100">
+                          <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-full bg-gradient-to-br from-sky-500 to-blue-600 text-sm font-semibold text-white">
                             {avatarUrl ? (
                               <img src={avatarUrl} alt="" className="h-full w-full object-cover" />
                             ) : (
@@ -2887,8 +2887,8 @@ export default function MessageThreadPage() {
                             )}
                           </div>
                           <div className="min-w-0">
-                            <p className="truncate text-sm font-medium text-slate-100">{label}</p>
-                            {subtitle && <p className="truncate text-xs text-slate-400">{subtitle}</p>}
+                            <p className="truncate text-sm font-medium text-slate-900">{label}</p>
+                            {subtitle && <p className="truncate text-xs text-slate-500">{subtitle}</p>}
                           </div>
                         </div>
                         <button
@@ -2907,7 +2907,7 @@ export default function MessageThreadPage() {
             </div>
 
             {forwardModalError && (
-              <div className="border-t border-white/10 px-5 py-3 text-xs text-rose-300">{forwardModalError}</div>
+              <div className="border-t border-slate-200 px-5 py-3 text-xs text-rose-600">{forwardModalError}</div>
             )}
           </div>
         </div>
