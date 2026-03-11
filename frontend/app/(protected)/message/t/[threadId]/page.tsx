@@ -2501,65 +2501,111 @@ export default function MessageThreadPage() {
 
                               <p className={`text-sm leading-relaxed ${isRemovedForEveryone ? "italic opacity-85" : ""}`}>{messageText}</p>
 
-                              {message.attachments && message.attachments.length > 0 && (
-                                <div className="mt-2 space-y-1.5">
-                                  {message.attachments.map((attachment) => {
-                                    const attachmentName = attachment.original_name || attachment.storage_path.split("/").pop() || "Attachment";
-                                    const attachmentUrl = resolveAttachmentUrl(attachment);
-                                    const isImageAttachment = attachment.attachment_type === "image";
+                              {message.attachments && message.attachments.length > 0 && (() => {
+                                const imageAttachments = message.attachments
+                                  .map((attachment) => ({
+                                    attachment,
+                                    url: resolveAttachmentUrl(attachment),
+                                  }))
+                                  .filter((item) => item.attachment.attachment_type === "image" && item.url);
+                                const fileAttachments = message.attachments.filter(
+                                  (attachment) => attachment.attachment_type !== "image" || !resolveAttachmentUrl(attachment)
+                                );
 
-                                    return (
-                                      <div
-                                        key={String(attachment.id)}
-                                        className={`flex items-center gap-2 rounded-lg px-2 py-1 ${isMine ? "bg-white/20" : "bg-slate-100"}`}
-                                      >
-                                        {isImageAttachment && attachmentUrl ? (
-                                          <button
-                                            type="button"
-                                            onClick={() => openImageViewer(attachmentUrl, attachmentName)}
-                                            className="flex items-center gap-2 text-left"
-                                            aria-label={`Open image ${attachmentName}`}
-                                          >
-                                            <img src={attachmentUrl} alt={attachmentName} className="h-14 w-14 rounded-md object-cover" />
-                                            <div className="min-w-0">
-                                              <p className={`truncate text-xs font-medium ${isMine ? "text-white" : "text-slate-700"}`}>{attachmentName}</p>
-                                              <p className={`text-[11px] ${isMine ? "text-blue-100" : "text-slate-500"}`}>{formatFileSize(attachment.size_bytes)}</p>
-                                            </div>
-                                          </button>
-                                        ) : (
-                                          <>
-                                            <span className={`inline-flex h-5 w-5 items-center justify-center rounded ${isMine ? "bg-white/30 text-white" : "bg-white text-slate-600"}`}>
+                                return (
+                                  <div className="mt-2 space-y-2">
+                                    {imageAttachments.length > 0 && (
+                                      <div className={`${imageAttachments.length > 1 ? "grid grid-cols-2 gap-2" : ""}`}>
+                                        {imageAttachments.map(({ attachment, url }) => {
+                                          const attachmentName =
+                                            attachment.original_name || attachment.storage_path.split("/").pop() || "Image";
+
+                                          return (
+                                            <button
+                                              key={String(attachment.id)}
+                                              type="button"
+                                              onClick={() => openImageViewer(url as string, attachmentName)}
+                                              className={`overflow-hidden rounded-2xl border ${isMine ? "border-blue-200/40" : "border-slate-200"} ${
+                                                imageAttachments.length > 1 ? "h-36" : "h-60"
+                                              } w-full bg-slate-100/30`}
+                                              aria-label={`Open image ${attachmentName}`}
+                                            >
+                                              <img src={url as string} alt={attachmentName} className="h-full w-full object-cover" />
+                                            </button>
+                                          );
+                                        })}
+                                      </div>
+                                    )}
+
+                                    {fileAttachments.map((attachment) => {
+                                      const attachmentName =
+                                        attachment.original_name || attachment.storage_path.split("/").pop() || "Attachment";
+                                      const attachmentUrl = resolveAttachmentUrl(attachment);
+                                      const isImageAttachment = attachment.attachment_type === "image";
+
+                                      return (
+                                        <div
+                                          key={String(attachment.id)}
+                                          className={`flex items-center justify-between gap-3 rounded-xl px-3 py-2 ${
+                                            isMine ? "bg-white/20" : "bg-slate-100"
+                                          }`}
+                                        >
+                                          <div className="flex min-w-0 items-center gap-2">
+                                            <span
+                                              className={`inline-flex h-8 w-8 items-center justify-center rounded-lg ${
+                                                isMine ? "bg-white/30 text-white" : "bg-white text-slate-600"
+                                              }`}
+                                            >
                                               {isImageAttachment ? (
-                                                <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-8h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                                                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                                  <path
+                                                    strokeLinecap="round"
+                                                    strokeLinejoin="round"
+                                                    strokeWidth="2"
+                                                    d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-8h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
+                                                  />
                                                 </svg>
                                               ) : (
-                                                <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14.752 11.168l-6.518 6.518a4 4 0 105.657 5.657l7.07-7.071a6 6 0 10-8.485-8.485l-7.07 7.071a8 8 0 1011.314 11.314l6.518-6.518" />
+                                                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                                  <path
+                                                    strokeLinecap="round"
+                                                    strokeLinejoin="round"
+                                                    strokeWidth="2"
+                                                    d="M14.752 11.168l-6.518 6.518a4 4 0 105.657 5.657l7.07-7.071a6 6 0 10-8.485-8.485l-7.07 7.071a8 8 0 1011.314 11.314l6.518-6.518"
+                                                  />
                                                 </svg>
                                               )}
                                             </span>
                                             <div className="min-w-0">
-                                              <p className={`truncate text-xs font-medium ${isMine ? "text-white" : "text-slate-700"}`}>{attachmentName}</p>
-                                              <p className={`text-[11px] ${isMine ? "text-blue-100" : "text-slate-500"}`}>{formatFileSize(attachment.size_bytes)}</p>
-                                              {attachmentUrl && (
-                                                <a
-                                                  href={attachmentUrl}
-                                                  target="_blank"
-                                                  rel="noreferrer"
-                                                  className={`text-[11px] ${isMine ? "text-blue-100" : "text-blue-600"}`}
-                                                >
-                                                  Open
-                                                </a>
-                                              )}
+                                              <p className={`truncate text-xs font-medium ${isMine ? "text-white" : "text-slate-700"}`}>
+                                                {attachmentName}
+                                              </p>
+                                              <p className={`text-[11px] ${isMine ? "text-blue-100" : "text-slate-500"}`}>
+                                                {formatFileSize(attachment.size_bytes)}
+                                              </p>
                                             </div>
-                                          </>
-                                        )}
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              )}
+                                          </div>
+                                          {attachmentUrl && (
+                                            <a
+                                              href={attachmentUrl}
+                                              target="_blank"
+                                              rel="noreferrer"
+                                              download
+                                              className={`rounded-full px-3 py-1 text-[11px] font-semibold ${
+                                                isMine
+                                                  ? "bg-white/80 text-slate-700 hover:bg-white"
+                                                  : "bg-white text-slate-700 hover:bg-slate-50"
+                                              }`}
+                                            >
+                                              Download
+                                            </a>
+                                          )}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                );
+                              })()}
 
                               <p className={`mt-1 text-[11px] ${isMine ? "text-blue-100/80" : "text-slate-500"}`}>
                                 {isOptimistic ? "Sending..." : `${formatClockTime(message.created_at)}${editedLabel}`}
