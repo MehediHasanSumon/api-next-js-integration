@@ -20,7 +20,7 @@ class MessageMutationService
             $actor,
             [
                 'sender:id,name,email',
-                'attachments:id,message_id,attachment_type,original_name,mime_type,size_bytes,width,height,duration_ms',
+                'attachments:id,message_id,attachment_type,storage_disk,storage_path,original_name,mime_type,extension,size_bytes,width,height,duration_ms,checksum_sha256,metadata',
             ],
             false
         );
