@@ -63,6 +63,14 @@ interface ChatConversationRequestUpdatedEvent {
   sent_at?: string;
 }
 
+interface ChatConversationUpdatedEvent {
+  conversation_id: number | string;
+  changes: {
+    title?: string | null;
+  };
+  sent_at?: string;
+}
+
 interface ChatConversationReadEvent {
   conversation_id: number | string;
   user_id: number;
@@ -470,9 +478,24 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
       void refreshThreads({ silent: true });
     };
 
+    const handleConversationUpdated = (payload: ChatConversationUpdatedEvent) => {
+      const conversationId = String(payload.conversation_id);
+      if (payload.changes?.title) {
+        dispatch(
+          patchThread({
+            id: conversationId,
+            changes: { name: payload.changes.title },
+          })
+        );
+      } else {
+        void refreshThreads({ silent: true });
+      }
+    };
+
     channel.listen(".chat.thread.updated", handleThreadUpdated);
     channel.listen(".chat.conversation.request.updated", handleRequestUpdated);
     channel.listen(".chat.user.presence.updated", handlePresenceUpdated);
+    channel.listen(".chat.conversation.updated", handleConversationUpdated);
 
     return () => {
       echo.leave(channelName);
@@ -480,7 +503,7 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
         userChannelRef.current = null;
       }
     };
-  }, [currentUserId, refreshThreads]);
+  }, [currentUserId, dispatch, refreshThreads]);
 
   useEffect(() => {
     return () => {

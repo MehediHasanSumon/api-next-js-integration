@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api\Chat;
 
 use App\Events\Chat\ConversationRequestUpdated;
+use App\Events\Chat\ConversationUpdated;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Chat\ConversationRequestActionRequest;
 use App\Http\Requests\Chat\StartConversationRequest;
@@ -281,6 +282,50 @@ class ConversationController extends Controller
                 'last_read_message_id' => $participant->last_read_message_id,
                 'last_read_at' => $participant->last_read_at,
             ],
+        ]);
+    }
+
+    public function update(Request $request, Conversation $conversation, ConversationAccessService $accessService): JsonResponse
+    {
+        $participant = $accessService->requireAcceptedParticipant($conversation, $request->user());
+
+        if ($conversation->type !== 'group') {
+            throw ValidationException::withMessages([
+                'conversation' => ['Only group conversations can be updated.'],
+            ]);
+        }
+
+        if ($participant->role !== 'owner') {
+            throw ValidationException::withMessages([
+                'conversation' => ['Only group owners can update this conversation.'],
+            ]);
+        }
+
+        $validated = $request->validate([
+            'title' => 'required|string|min:1|max:100',
+        ]);
+
+        $title = trim((string) $validated['title']);
+        if ($title === '') {
+            throw ValidationException::withMessages([
+                'title' => ['Group name is required.'],
+            ]);
+        }
+
+        $conversation->update([
+            'title' => $title,
+        ]);
+
+        $recipientIds = $accessService->visibleRecipientIds($conversation, (int) $request->user()->id);
+        broadcast(new ConversationUpdated(
+            (int) $conversation->id,
+            ['title' => $title],
+            $recipientIds
+        ))->toOthers();
+
+        return response()->json([
+            'message' => 'Conversation updated successfully.',
+            'conversation' => $conversation->fresh(),
         ]);
     }
 

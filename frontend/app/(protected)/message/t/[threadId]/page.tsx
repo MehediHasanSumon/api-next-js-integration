@@ -27,6 +27,7 @@ import {
   removeMessageReaction,
   respondToConversationRequest,
   sendMessage,
+  updateConversation,
   updateMessage,
   uploadChatAttachment,
   showConversation,
@@ -522,6 +523,10 @@ export default function MessageThreadPage() {
   const [archiveActionLoading, setArchiveActionLoading] = useState(false);
   const [echoConnectionStatus, setEchoConnectionStatus] = useState<EchoConnectionStatus>("connecting");
   const [messageActionError, setMessageActionError] = useState<string | null>(null);
+  const [groupNameDraft, setGroupNameDraft] = useState("");
+  const [groupNameEditing, setGroupNameEditing] = useState(false);
+  const [groupNameSaving, setGroupNameSaving] = useState(false);
+  const [groupNameError, setGroupNameError] = useState<string | null>(null);
   const [reactionModalMessage, setReactionModalMessage] = useState<Message | null>(null);
   const [reactionPopoverPosition, setReactionPopoverPosition] = useState<{ top: number; left: number } | null>(null);
   const [reactionMutationLoadingKey, setReactionMutationLoadingKey] = useState<string | null>(null);
@@ -532,7 +537,13 @@ export default function MessageThreadPage() {
   const [forwardModalLoading, setForwardModalLoading] = useState(false);
   const [forwardTargets, setForwardTargets] = useState<ConversationListItem[]>([]);
   const [forwardTargetsLoading, setForwardTargetsLoading] = useState(false);
-  const [imageViewer, setImageViewer] = useState<{ url: string; name: string } | null>(null);
+  const [imageViewer, setImageViewer] = useState<{
+    url: string;
+    name: string;
+    mode: "single" | "gallery";
+    list?: { url: string; name: string }[];
+    index?: number;
+  } | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [removeModalMessage, setRemoveModalMessage] = useState<Message | null>(null);
@@ -694,6 +705,7 @@ export default function MessageThreadPage() {
 
   const conversation = conversationData?.conversation ?? null;
   const participant = conversationData?.participant ?? null;
+  const isGroupConversation = conversation?.type === "group";
   const canEmitTyping = participant?.participant_state === "accepted" && participant.archived_at === null;
   const hasAttachmentUploadsInProgress = draftAttachments.some((item) => item.status === "uploading");
 
@@ -714,6 +726,21 @@ export default function MessageThreadPage() {
 
   const counterpartOnline = Boolean(counterpart?.id && presenceByUserId[counterpart.id]?.isOnline);
 
+  const detailsDisplayName = isGroupConversation
+    ? conversation?.title?.trim() || activeThread?.name || "Group chat"
+    : counterpart?.name || activeThread?.name || "Conversation";
+  const detailsAvatarUrl = conversation?.avatar_path ? resolveAvatarUrl(conversation.avatar_path) : null;
+  const detailsOnline = isGroupConversation ? false : counterpartOnline;
+
+  const canEditGroupName = useMemo(() => {
+    if (!conversation?.participants || currentUserId === null) {
+      return false;
+    }
+
+    const me = conversation.participants.find((item) => item.user_id === currentUserId);
+    return me?.role === "owner";
+  }, [conversation?.participants, currentUserId]);
+
   const otherParticipants = useMemo(() => {
     if (!conversation?.participants || currentUserId === null) {
       return [];
@@ -728,6 +755,37 @@ export default function MessageThreadPage() {
         lastSeenAt: item.user?.last_seen_at ?? null,
       }));
   }, [conversation?.participants, currentUserId]);
+
+  const mediaPhotos = useMemo(() => {
+    const collected: { url: string; name: string }[] = [];
+
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const message = messages[i];
+      const attachments = message.attachments ?? [];
+      attachments.forEach((attachment) => {
+        const type = attachment.attachment_type as string;
+        const isImageType = type === "image";
+        const isImageMime = (attachment.mime_type ?? "").startsWith("image/");
+        if (!isImageType && !isImageMime) {
+          return;
+        }
+
+        const url = resolveAttachmentUrl(attachment);
+        if (!url) {
+          return;
+        }
+
+        const name = attachment.original_name ?? "Image";
+        collected.push({ url, name });
+      });
+
+      if (collected.length >= 6) {
+        break;
+      }
+    }
+
+    return collected.slice(0, 6);
+  }, [messages]);
 
   const typingUserNames = useMemo(() => {
     if (!conversation?.participants || typingUserIds.length === 0) {
@@ -768,6 +826,22 @@ export default function MessageThreadPage() {
 
     return `${typingUserNames[0]}, ${typingUserNames[1]} and ${typingUserNames.length - 2} others are typing...`;
   }, [typingUserNames]);
+
+  useEffect(() => {
+    if (!conversation) {
+      return;
+    }
+
+    if (!isGroupConversation) {
+      setGroupNameDraft("");
+      setGroupNameEditing(false);
+      setGroupNameError(null);
+      return;
+    }
+
+    setGroupNameDraft(conversation.title?.trim() || "");
+    setGroupNameError(null);
+  }, [conversation, isGroupConversation]);
 
   const presenceSubtitle = useMemo(() => {
     if (typingIndicatorText) {
@@ -1863,8 +1937,39 @@ export default function MessageThreadPage() {
       draftAttachments.forEach((item) => {
         if (item.previewUrl) {
           URL.revokeObjectURL(item.previewUrl);
-        }
-      });
+      }
+    });
+
+    channel.listen(".chat.conversation.updated", (payload: { conversation_id: number | string; changes?: { title?: string | null } }) => {
+      if (String(payload.conversation_id) !== threadId) {
+        return;
+      }
+
+      if (payload.changes?.title) {
+        setConversationData((previous) => {
+          if (!previous) {
+            return previous;
+          }
+
+          return {
+            ...previous,
+            conversation: {
+              ...previous.conversation,
+              title: payload.changes?.title ?? previous.conversation.title,
+            },
+          };
+        });
+
+        dispatch(
+          patchThread({
+            id: threadId,
+            changes: {
+              name: payload.changes.title,
+            },
+          })
+        );
+      }
+    });
       setDraftAttachments([]);
       setAttachmentError(null);
     } catch (error) {
@@ -1973,6 +2078,59 @@ export default function MessageThreadPage() {
     }
   };
 
+  const cancelGroupNameEdit = () => {
+    setGroupNameEditing(false);
+    setGroupNameError(null);
+    setGroupNameDraft(conversation?.title?.trim() || "");
+  };
+
+  const handleGroupNameSave = async () => {
+    if (!threadId || !conversation || !isGroupConversation || !canEditGroupName) {
+      return;
+    }
+
+    const nextTitle = groupNameDraft.trim();
+    if (!nextTitle) {
+      setGroupNameError("Group name is required.");
+      return;
+    }
+
+    setGroupNameSaving(true);
+    setGroupNameError(null);
+
+    try {
+      const response = await updateConversation(threadId, { title: nextTitle });
+      setConversationData((previous) => {
+        if (!previous) {
+          return previous;
+        }
+
+        return {
+          ...previous,
+          conversation: {
+            ...previous.conversation,
+            title: response.conversation.title,
+          },
+        };
+      });
+      dispatch(
+        patchThread({
+          id: threadId,
+          changes: {
+            name: response.conversation.title ?? nextTitle,
+          },
+        })
+      );
+      setGroupNameEditing(false);
+    } catch (error) {
+      const axiosError = error as AxiosError<ApiValidationErrorPayload>;
+      const firstError = Object.values(axiosError.response?.data?.errors ?? {})[0]?.[0];
+      setGroupNameError(firstError || axiosError.response?.data?.message || "Failed to update group name.");
+    } finally {
+      setGroupNameSaving(false);
+    }
+  };
+
   const openForwardModal = (message: Message) => {
     setMessageActionError(null);
     setForwardModalMessage(message);
@@ -2031,12 +2189,79 @@ export default function MessageThreadPage() {
   };
 
   const openImageViewer = (url: string, name: string) => {
-    setImageViewer({ url, name });
+    setImageViewer({ url, name, mode: "single" });
+  };
+
+  const openImageGallery = (list: { url: string; name: string }[], index: number) => {
+    if (list.length === 0) {
+      return;
+    }
+
+    const clampedIndex = Math.max(0, Math.min(index, list.length - 1));
+    const target = list[clampedIndex];
+    setImageViewer({ url: target.url, name: target.name, mode: "gallery", list, index: clampedIndex });
   };
 
   const closeImageViewer = () => {
     setImageViewer(null);
   };
+
+  const goToPreviousImage = useCallback(() => {
+    setImageViewer((current) => {
+      if (!current || current.mode !== "gallery" || !current.list || current.list.length === 0) {
+        return current;
+      }
+
+      const currentIndex = current.index ?? 0;
+      const nextIndex = Math.max(0, currentIndex - 1);
+      const target = current.list[nextIndex];
+      return {
+        ...current,
+        url: target.url,
+        name: target.name,
+        index: nextIndex,
+      };
+    });
+  }, []);
+
+  const goToNextImage = useCallback(() => {
+    setImageViewer((current) => {
+      if (!current || current.mode !== "gallery" || !current.list || current.list.length === 0) {
+        return current;
+      }
+
+      const currentIndex = current.index ?? 0;
+      const nextIndex = Math.min(current.list.length - 1, currentIndex + 1);
+      const target = current.list[nextIndex];
+      return {
+        ...current,
+        url: target.url,
+        name: target.name,
+        index: nextIndex,
+      };
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!imageViewer || imageViewer.mode !== "gallery") {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        goToPreviousImage();
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        goToNextImage();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [goToNextImage, goToPreviousImage, imageViewer]);
 
   const closeRemoveModal = () => {
     setRemoveModalMessage(null);
@@ -2567,16 +2792,6 @@ export default function MessageThreadPage() {
                   </Button>
                   <Button
                     type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-8 rounded-full px-3 text-xs"
-                    onClick={() => void handleArchiveToggle()}
-                    disabled={archiveActionLoading || isLoading || !participant}
-                  >
-                    {archiveActionLoading ? "Saving..." : isArchivedThread ? "Unarchive" : "Archive"}
-                  </Button>
-                  <Button
-                    type="button"
                     variant={showInfoPanel ? "outline" : "ghost"}
                     size="icon"
                     className="rounded-full text-slate-500"
@@ -2976,14 +3191,65 @@ export default function MessageThreadPage() {
               <div className="rounded-xl border border-slate-200 bg-white p-4 text-center">
                 <div className="mx-auto">
                   <UserAvatar
-                    name={counterpart?.name || activeThread?.name || "Conversation"}
+                    name={detailsDisplayName}
+                    src={detailsAvatarUrl}
                     size={56}
-                    isOnline={counterpartOnline}
+                    isOnline={detailsOnline}
+                    showStatus={!isGroupConversation}
                   />
                 </div>
-                <p className="mt-3 text-sm font-semibold text-slate-900">{counterpart?.name || activeThread?.name || "Conversation"}</p>
-                <p className="text-xs text-slate-500">{counterpart?.email || activeThread?.handle || "-"}</p>
-                <p className="mt-1 text-[11px] font-medium text-slate-500">Presence will appear with realtime presence step.</p>
+                <p className="mt-3 text-sm font-semibold text-slate-900">{detailsDisplayName}</p>
+                {isGroupConversation ? (
+                  <div className="mt-3 text-left">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Group name</p>
+                      {!groupNameEditing && canEditGroupName && (
+                        <button
+                          type="button"
+                          className="text-[11px] font-semibold text-slate-500 hover:text-slate-700"
+                          onClick={() => setGroupNameEditing(true)}
+                        >
+                          Edit
+                        </button>
+                      )}
+                    </div>
+                    {groupNameEditing && canEditGroupName ? (
+                      <div className="mt-2 space-y-2">
+                        <input
+                          value={groupNameDraft}
+                          onChange={(event) => setGroupNameDraft(event.target.value)}
+                          placeholder="Group name"
+                          className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[color:var(--messenger-blue)]/30"
+                          disabled={groupNameSaving}
+                        />
+                        {groupNameError && <p className="text-xs text-rose-600">{groupNameError}</p>}
+                        <div className="flex gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            className="rounded-full px-3 text-xs"
+                            onClick={() => void handleGroupNameSave()}
+                            disabled={groupNameSaving}
+                          >
+                            {groupNameSaving ? "Saving..." : "Save"}
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="rounded-full px-3 text-xs"
+                            onClick={cancelGroupNameEdit}
+                            disabled={groupNameSaving}
+                          >
+                            Cancel
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="mt-1 text-sm text-slate-700">{conversation?.title || "Group chat"}</p>
+                    )}
+                  </div>
+                ) : null}
               </div>
 
               <div className="rounded-xl border border-slate-200 bg-white p-4">
@@ -2993,9 +3259,45 @@ export default function MessageThreadPage() {
                 </p>
               </div>
 
+              <div className="rounded-xl border border-slate-200 bg-white p-4">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Media Photos</p>
+                  <button type="button" className="text-[11px] font-semibold text-slate-500 hover:text-slate-700">
+                    See all
+                  </button>
+                </div>
+                {mediaPhotos.length === 0 ? (
+                  <div className="mt-3 rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-6 text-center text-xs text-slate-500">
+                    No photos yet.
+                  </div>
+                ) : (
+                  <div className="mt-3 grid grid-cols-3 gap-2">
+                    {mediaPhotos.map((photo, index) => (
+                      <button
+                        key={`${photo.url}-${index}`}
+                        type="button"
+                        className="group relative aspect-square overflow-hidden rounded-lg border border-slate-200 bg-slate-100"
+                        onClick={() => openImageGallery(mediaPhotos, index)}
+                        aria-label={`Open ${photo.name}`}
+                      >
+                        <img src={photo.url} alt="" className="h-full w-full object-cover transition group-hover:scale-105" />
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               <div className="rounded-xl border border-slate-200 bg-white p-2">
-                <Button type="button" variant="ghost" size="sm" fullWidth className="justify-start border-0 text-xs font-medium text-slate-700 shadow-none">
-                  Search in conversation
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  fullWidth
+                  className="justify-start border-0 text-xs font-medium text-slate-700 shadow-none"
+                  onClick={() => void handleArchiveToggle()}
+                  disabled={archiveActionLoading || isLoading || !participant}
+                >
+                  {archiveActionLoading ? "Saving..." : isArchivedThread ? "Unarchive" : "Archive"}
                 </Button>
                 <Button type="button" variant="ghost" size="sm" fullWidth className="justify-start border-0 text-xs font-medium text-slate-700 shadow-none">
                   Mute notifications
@@ -3163,6 +3465,32 @@ export default function MessageThreadPage() {
             >
               <X className="h-4 w-4" />
             </button>
+            {imageViewer.mode === "gallery" && imageViewer.list && imageViewer.list.length > 1 && (
+              <>
+                <button
+                  type="button"
+                  className="absolute left-2 top-1/2 z-10 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/10 text-white transition hover:bg-white/20 disabled:opacity-40"
+                  onClick={goToPreviousImage}
+                  disabled={(imageViewer.index ?? 0) <= 0}
+                  aria-label="Previous photo"
+                >
+                  <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  className="absolute right-2 top-1/2 z-10 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/10 text-white transition hover:bg-white/20 disabled:opacity-40"
+                  onClick={goToNextImage}
+                  disabled={(imageViewer.index ?? 0) >= (imageViewer.list.length - 1)}
+                  aria-label="Next photo"
+                >
+                  <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7" />
+                  </svg>
+                </button>
+              </>
+            )}
             <div className="overflow-hidden rounded-2xl bg-slate-900 shadow-2xl">
               <img
                 src={imageViewer.url}
@@ -3171,6 +3499,11 @@ export default function MessageThreadPage() {
               />
             </div>
             <p className="mt-3 text-center text-xs text-slate-200">{imageViewer.name}</p>
+            {imageViewer.mode === "gallery" && imageViewer.list && imageViewer.list.length > 1 ? (
+              <p className="mt-1 text-center text-[11px] text-slate-400">
+                {(imageViewer.index ?? 0) + 1} / {imageViewer.list.length}
+              </p>
+            ) : null}
           </div>
         </div>
       )}

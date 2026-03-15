@@ -649,6 +649,14 @@ export const unarchiveConversation = async (
   return data;
 };
 
+export const updateConversation = async (
+  conversationId: ConversationId,
+  payload: { title: string }
+): Promise<{ message: string; conversation: Conversation }> => {
+  const { data } = await api.patch<{ message: string; conversation: Conversation }>(conversationPath(conversationId), payload);
+  return data;
+};
+
 const chatApi = {
   startConversation,
   listConversations,

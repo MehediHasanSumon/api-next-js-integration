@@ -49,6 +49,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/conversations', [ConversationController::class, 'store']);
         Route::get('/conversations', [ConversationController::class, 'index']);
         Route::get('/conversations/{conversation}', [ConversationController::class, 'show']);
+        Route::patch('/conversations/{conversation}', [ConversationController::class, 'update']);
         Route::post('/conversations/{conversation}/request/respond', [ConversationController::class, 'respondToRequest']);
         Route::post('/conversations/{conversation}/archive', [ConversationController::class, 'archive']);
         Route::delete('/conversations/{conversation}/archive', [ConversationController::class, 'unarchive']);
