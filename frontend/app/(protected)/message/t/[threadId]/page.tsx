@@ -18,12 +18,15 @@ import MessageAttachments from "@/components/messenger/MessageAttachments";
 import DraftAttachmentsPreview from "@/components/messenger/DraftAttachmentsPreview";
 import {
   archiveConversation,
+  addConversationParticipants,
   forwardMessage,
+  listChatUsers,
   listConversations,
   listMessages,
   markConversationRead,
   removeMessageForEverywhere,
   removeMessageForYou,
+  removeConversationParticipant,
   removeMessageReaction,
   respondToConversationRequest,
   sendMessage,
@@ -51,6 +54,7 @@ import type {
   Message,
   MessageRemovalMode,
   ReactionAggregate,
+  DirectoryUser,
 } from "@/types/chat";
 
 type DraftAttachmentStatus = "uploading" | "ready" | "error";
@@ -527,6 +531,14 @@ export default function MessageThreadPage() {
   const [groupNameEditing, setGroupNameEditing] = useState(false);
   const [groupNameSaving, setGroupNameSaving] = useState(false);
   const [groupNameError, setGroupNameError] = useState<string | null>(null);
+  const [membersModalOpen, setMembersModalOpen] = useState(false);
+  const [memberDirectory, setMemberDirectory] = useState<DirectoryUser[]>([]);
+  const [memberSearch, setMemberSearch] = useState("");
+  const [memberLoading, setMemberLoading] = useState(false);
+  const [memberError, setMemberError] = useState<string | null>(null);
+  const [memberSelection, setMemberSelection] = useState<Set<number>>(new Set());
+  const [memberSaving, setMemberSaving] = useState(false);
+  const [memberActionError, setMemberActionError] = useState<string | null>(null);
   const [reactionModalMessage, setReactionModalMessage] = useState<Message | null>(null);
   const [reactionPopoverPosition, setReactionPopoverPosition] = useState<{ top: number; left: number } | null>(null);
   const [reactionMutationLoadingKey, setReactionMutationLoadingKey] = useState<string | null>(null);
@@ -737,9 +749,44 @@ export default function MessageThreadPage() {
       return false;
     }
 
-    const me = conversation.participants.find((item) => item.user_id === currentUserId);
+    const me = conversation.participants.find(
+      (item) => Number(item.user_id) === Number(currentUserId)
+    );
     return me?.role === "owner";
   }, [conversation?.participants, currentUserId]);
+
+  const canEditGroupMembers = isGroupConversation && canEditGroupName;
+
+  const groupMembers = useMemo(() => {
+    if (!conversation?.participants) {
+      return [];
+    }
+
+    return conversation.participants
+      .filter((item) => item.user)
+      .map((item) => ({
+        id: item.user_id,
+        name: item.user?.name ?? "User",
+        role: item.role,
+      }));
+  }, [conversation?.participants]);
+
+  const existingMemberIds = useMemo(() => new Set(groupMembers.map((member) => member.id)), [groupMembers]);
+
+  const filteredMemberDirectory = useMemo(() => {
+    const query = memberSearch.trim().toLowerCase();
+    return memberDirectory.filter((user) => {
+      if (existingMemberIds.has(user.id)) {
+        return false;
+      }
+
+      if (!query) {
+        return true;
+      }
+
+      return user.name.toLowerCase().includes(query);
+    });
+  }, [existingMemberIds, memberDirectory, memberSearch]);
 
   const otherParticipants = useMemo(() => {
     if (!conversation?.participants || currentUserId === null) {
@@ -1940,7 +1987,9 @@ export default function MessageThreadPage() {
       }
     });
 
-    channel.listen(".chat.conversation.updated", (payload: { conversation_id: number | string; changes?: { title?: string | null } }) => {
+    channel.listen(
+      ".chat.conversation.updated",
+      (payload: { conversation_id: number | string; changes?: { title?: string | null; participants_updated?: boolean } }) => {
       if (String(payload.conversation_id) !== threadId) {
         return;
       }
@@ -1968,6 +2017,10 @@ export default function MessageThreadPage() {
             },
           })
         );
+      }
+
+      if (payload.changes?.participants_updated) {
+        void refreshConversation();
       }
     });
       setDraftAttachments([]);
@@ -2128,6 +2181,96 @@ export default function MessageThreadPage() {
       setGroupNameError(firstError || axiosError.response?.data?.message || "Failed to update group name.");
     } finally {
       setGroupNameSaving(false);
+    }
+  };
+
+  const openMembersModal = async () => {
+    if (!isGroupConversation) {
+      return;
+    }
+
+    setMembersModalOpen(true);
+    setMemberSearch("");
+    setMemberSelection(new Set());
+    setMemberError(null);
+    setMemberActionError(null);
+    setMemberLoading(true);
+
+    try {
+      const users = await listChatUsers({ limit: 500 });
+      setMemberDirectory(users);
+    } catch (error) {
+      const axiosError = error as AxiosError<{ message?: string }>;
+      setMemberError(axiosError.response?.data?.message || "Failed to load users.");
+      setMemberDirectory([]);
+    } finally {
+      setMemberLoading(false);
+    }
+  };
+
+  const closeMembersModal = () => {
+    setMembersModalOpen(false);
+    setMemberSearch("");
+    setMemberSelection(new Set());
+    setMemberError(null);
+    setMemberActionError(null);
+  };
+
+  const toggleMemberSelection = (userId: number) => {
+    setMemberSelection((previous) => {
+      const next = new Set(previous);
+      if (next.has(userId)) {
+        next.delete(userId);
+      } else {
+        next.add(userId);
+      }
+      return next;
+    });
+  };
+
+  const handleAddMembers = async () => {
+    if (!threadId || !isGroupConversation || !canEditGroupMembers) {
+      return;
+    }
+
+    const ids = Array.from(memberSelection);
+    if (ids.length === 0) {
+      setMemberActionError("Select at least one user.");
+      return;
+    }
+
+    setMemberSaving(true);
+    setMemberActionError(null);
+
+    try {
+      await addConversationParticipants(threadId, { participant_ids: ids });
+      await refreshConversation();
+      await refreshThreads();
+      closeMembersModal();
+    } catch (error) {
+      const axiosError = error as AxiosError<ApiValidationErrorPayload>;
+      const firstError = Object.values(axiosError.response?.data?.errors ?? {})[0]?.[0];
+      setMemberActionError(firstError || axiosError.response?.data?.message || "Failed to add members.");
+    } finally {
+      setMemberSaving(false);
+    }
+  };
+
+  const handleRemoveMember = async (userId: number) => {
+    if (!threadId || !isGroupConversation || !canEditGroupMembers) {
+      return;
+    }
+
+    setMemberActionError(null);
+
+    try {
+      await removeConversationParticipant(threadId, userId);
+      await refreshConversation();
+      await refreshThreads();
+    } catch (error) {
+      const axiosError = error as AxiosError<ApiValidationErrorPayload>;
+      const firstError = Object.values(axiosError.response?.data?.errors ?? {})[0]?.[0];
+      setMemberActionError(firstError || axiosError.response?.data?.message || "Failed to remove member.");
     }
   };
 
@@ -3252,6 +3395,58 @@ export default function MessageThreadPage() {
                 ) : null}
               </div>
 
+              {isGroupConversation && (
+                <div className="rounded-xl border border-slate-200 bg-white p-4">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Members ({groupMembers.length})
+                    </p>
+                    {canEditGroupMembers && (
+                      <button
+                        type="button"
+                        className="text-[11px] font-semibold text-slate-500 hover:text-slate-700"
+                        onClick={() => void openMembersModal()}
+                      >
+                        Add members
+                      </button>
+                    )}
+                  </div>
+                  <div className="mt-3 space-y-2">
+                    {groupMembers.map((member) => {
+                      const isOwner = member.role === "owner";
+                      const showRemove =
+                        canEditGroupMembers && !isOwner && Number(member.id) !== Number(currentUserId);
+                      const isOnline = Boolean(presenceByUserId[member.id]?.isOnline);
+
+                      return (
+                        <div
+                          key={`member-${member.id}`}
+                          className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2"
+                        >
+                          <div className="flex min-w-0 items-center gap-2">
+                            <UserAvatar name={member.name} size={32} isOnline={isOnline} />
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-medium text-slate-900">{member.name}</p>
+                              <p className="text-[11px] text-slate-500">{isOwner ? "Owner" : "Member"}</p>
+                            </div>
+                          </div>
+                          {showRemove ? (
+                            <button
+                              type="button"
+                              className="text-xs font-semibold text-rose-600 hover:text-rose-700"
+                              onClick={() => void handleRemoveMember(member.id)}
+                            >
+                              Remove
+                            </button>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {memberActionError && <p className="mt-2 text-xs text-rose-600">{memberActionError}</p>}
+                </div>
+              )}
+
               <div className="rounded-xl border border-slate-200 bg-white p-4">
                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">About</p>
                 <p className="mt-2 text-xs leading-relaxed text-slate-600">
@@ -3444,6 +3639,99 @@ export default function MessageThreadPage() {
             {forwardModalError && (
               <div className="border-t border-slate-200 px-5 py-3 text-xs text-rose-600">{forwardModalError}</div>
             )}
+          </div>
+        </div>
+      )}
+
+      {membersModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <button
+            type="button"
+            className="absolute inset-0 bg-slate-900/50"
+            aria-label="Close members modal"
+            onClick={memberSaving ? undefined : closeMembersModal}
+          />
+          <div className="relative w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+              <h2 className="text-base font-semibold text-slate-900">Add members</h2>
+              <button
+                type="button"
+                className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition hover:bg-slate-200"
+                onClick={memberSaving ? undefined : closeMembersModal}
+                disabled={memberSaving}
+                aria-label="Close members modal"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="px-5 py-4">
+              <input
+                value={memberSearch}
+                onChange={(event) => setMemberSearch(event.target.value)}
+                placeholder="Search users"
+                className="h-10 w-full rounded-full border border-slate-200 bg-slate-100 px-4 text-sm text-slate-800 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-[color:var(--messenger-blue)]/30"
+                disabled={memberLoading || memberSaving}
+              />
+
+              <div className="mt-4 max-h-[320px] space-y-2 overflow-y-auto pr-1">
+                {memberLoading ? (
+                  <p className="text-sm text-slate-500">Loading users...</p>
+                ) : memberError ? (
+                  <p className="text-sm text-rose-600">{memberError}</p>
+                ) : filteredMemberDirectory.length === 0 ? (
+                  <p className="text-sm text-slate-500">No users available.</p>
+                ) : (
+                  filteredMemberDirectory.map((user) => {
+                    const isSelected = memberSelection.has(user.id);
+                    const isOnline = Boolean(presenceByUserIdMap[user.id]?.isOnline);
+
+                    return (
+                      <button
+                        key={`member-select-${user.id}`}
+                        type="button"
+                        className={`flex w-full items-center justify-between gap-3 rounded-xl border px-3 py-2 text-left transition ${
+                          isSelected ? "border-blue-200 bg-blue-50" : "border-slate-200 bg-white hover:bg-slate-50"
+                        }`}
+                        onClick={() => toggleMemberSelection(user.id)}
+                      >
+                        <div className="flex min-w-0 items-center gap-3">
+                          <UserAvatar name={user.name} size={36} isOnline={isOnline} />
+                          <span className="truncate text-sm font-medium text-slate-900">{user.name}</span>
+                        </div>
+                        <div
+                          className={`flex h-5 w-5 items-center justify-center rounded-full border ${
+                            isSelected ? "border-blue-500 bg-blue-500" : "border-slate-300"
+                          }`}
+                        >
+                          {isSelected && (
+                            <svg className="h-4 w-4 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
+                            </svg>
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+
+              {memberActionError && <p className="mt-3 text-xs text-rose-600">{memberActionError}</p>}
+            </div>
+
+            <div className="flex flex-col-reverse gap-2 border-t border-slate-200 px-5 py-4 sm:flex-row sm:justify-end">
+              <Button type="button" variant="outline" onClick={closeMembersModal} disabled={memberSaving}>
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                onClick={() => void handleAddMembers()}
+                loading={memberSaving}
+                disabled={memberSaving || memberSelection.size === 0}
+              >
+                Add
+              </Button>
+            </div>
           </div>
         </div>
       )}

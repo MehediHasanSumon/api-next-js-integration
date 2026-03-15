@@ -329,6 +329,141 @@ class ConversationController extends Controller
         ]);
     }
 
+    public function addParticipants(
+        Request $request,
+        Conversation $conversation,
+        ConversationAccessService $accessService
+    ): JsonResponse {
+        $participant = $accessService->requireAcceptedParticipant($conversation, $request->user());
+
+        if ($conversation->type !== 'group') {
+            throw ValidationException::withMessages([
+                'conversation' => ['Only group conversations can be updated.'],
+            ]);
+        }
+
+        if ($participant->role !== 'owner') {
+            throw ValidationException::withMessages([
+                'conversation' => ['Only group owners can update members.'],
+            ]);
+        }
+
+        $validated = $request->validate([
+            'participant_ids' => 'required|array|min:1',
+            'participant_ids.*' => 'integer|exists:users,id',
+        ]);
+
+        $incomingIds = collect($validated['participant_ids'])
+            ->map(fn ($id) => (int) $id)
+            ->filter(fn (int $id) => $id > 0)
+            ->unique()
+            ->values()
+            ->all();
+
+        if ($incomingIds === []) {
+            throw ValidationException::withMessages([
+                'participant_ids' => ['Select at least one user.'],
+            ]);
+        }
+
+        $existingIds = $conversation->participants()->pluck('user_id')->map(fn ($id) => (int) $id)->all();
+        $newIds = array_values(array_diff($incomingIds, $existingIds));
+
+        if ($newIds === []) {
+            return response()->json([
+                'message' => 'No new participants to add.',
+                'conversation' => $conversation->fresh(['participants.user']),
+            ]);
+        }
+
+        $now = now();
+        foreach ($newIds as $userId) {
+            $conversation->participants()->create([
+                'user_id' => $userId,
+                'role' => 'member',
+                'participant_state' => 'accepted',
+                'accepted_at' => $now,
+                'declined_at' => null,
+                'hidden_at' => null,
+                'archived_at' => null,
+            ]);
+        }
+
+        $recipientIds = $accessService->visibleRecipientIds($conversation, (int) $request->user()->id);
+        broadcast(new ConversationUpdated(
+            (int) $conversation->id,
+            ['participants_updated' => true],
+            $recipientIds
+        ))->toOthers();
+
+        return response()->json([
+            'message' => 'Participants added successfully.',
+            'conversation' => $conversation->fresh(['participants.user']),
+        ]);
+    }
+
+    public function removeParticipant(
+        Request $request,
+        Conversation $conversation,
+        User $user,
+        ConversationAccessService $accessService
+    ): JsonResponse {
+        $participant = $accessService->requireAcceptedParticipant($conversation, $request->user());
+
+        if ($conversation->type !== 'group') {
+            throw ValidationException::withMessages([
+                'conversation' => ['Only group conversations can be updated.'],
+            ]);
+        }
+
+        if ($participant->role !== 'owner') {
+            throw ValidationException::withMessages([
+                'conversation' => ['Only group owners can update members.'],
+            ]);
+        }
+
+        if ((int) $user->id === (int) $request->user()->id) {
+            throw ValidationException::withMessages([
+                'participant' => ['You cannot remove yourself from the group.'],
+            ]);
+        }
+
+        $targetParticipant = $conversation->participants()
+            ->where('user_id', $user->id)
+            ->first();
+
+        if (!$targetParticipant) {
+            throw ValidationException::withMessages([
+                'participant' => ['User is not part of this group.'],
+            ]);
+        }
+
+        if ($targetParticipant->role === 'owner') {
+            throw ValidationException::withMessages([
+                'participant' => ['Owner cannot be removed.'],
+            ]);
+        }
+
+        $targetParticipant->update([
+            'participant_state' => 'declined',
+            'declined_at' => now(),
+            'hidden_at' => now(),
+            'unread_count' => 0,
+        ]);
+
+        $recipientIds = $accessService->visibleRecipientIds($conversation, (int) $request->user()->id);
+        broadcast(new ConversationUpdated(
+            (int) $conversation->id,
+            ['participants_updated' => true],
+            $recipientIds
+        ))->toOthers();
+
+        return response()->json([
+            'message' => 'Participant removed successfully.',
+            'conversation' => $conversation->fresh(['participants.user']),
+        ]);
+    }
+
     public function respondToRequest(
         ConversationRequestActionRequest $request,
         Conversation $conversation,

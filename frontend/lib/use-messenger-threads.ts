@@ -122,7 +122,7 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
     await dispatch(fetchInboxThreads(options));
 
     try {
-      const response = await listConversations({ filter: "all", per_page: 200 });
+      const response = await listConversations({ filter: "all", per_page: 100 });
       setConversationDirectory(response.data);
     } catch {
       setConversationDirectory([]);

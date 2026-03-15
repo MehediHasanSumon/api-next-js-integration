@@ -657,6 +657,27 @@ export const updateConversation = async (
   return data;
 };
 
+export const addConversationParticipants = async (
+  conversationId: ConversationId,
+  payload: { participant_ids: number[] }
+): Promise<{ message: string; conversation: Conversation }> => {
+  const { data } = await api.post<{ message: string; conversation: Conversation }>(
+    `${conversationPath(conversationId)}/participants`,
+    payload
+  );
+  return data;
+};
+
+export const removeConversationParticipant = async (
+  conversationId: ConversationId,
+  userId: number
+): Promise<{ message: string; conversation: Conversation }> => {
+  const { data } = await api.delete<{ message: string; conversation: Conversation }>(
+    `${conversationPath(conversationId)}/participants/${userId}`
+  );
+  return data;
+};
+
 const chatApi = {
   startConversation,
   listConversations,
