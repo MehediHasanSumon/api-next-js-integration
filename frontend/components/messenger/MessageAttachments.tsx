@@ -45,20 +45,27 @@ export default function MessageAttachments({
   const imageAttachments = attachmentItems.filter(
     (item) => item.attachment.attachment_type === "image" && item.url
   );
-  const audioAttachments = attachmentItems.filter((item) => {
-    const type = item.attachment.attachment_type as string;
+  const isAudioAttachment = (attachment: Attachment, url: string | null): boolean => {
+    if (!url) {
+      return false;
+    }
+
+    const type = attachment.attachment_type as string;
     const isAudioType = type === "voice" || type === "audio";
-    const isAudioMime = (item.attachment.mime_type ?? "").startsWith("audio/");
-    return (isAudioType || isAudioMime) && item.url;
-  });
+    const isAudioMime = (attachment.mime_type ?? "").startsWith("audio/");
+    const path = attachment.storage_path?.toLowerCase() ?? "";
+    const isAudioExtension = [".webm", ".ogg", ".mp3", ".wav", ".m4a"].some((ext) => path.endsWith(ext));
+
+    return isAudioType || isAudioMime || isAudioExtension;
+  };
+
+  const audioAttachments = attachmentItems.filter((item) => isAudioAttachment(item.attachment, item.url));
   const fileAttachments = attachmentItems.filter((item) => {
     const type = item.attachment.attachment_type as string;
     if (type === "image" && item.url) {
       return false;
     }
-    const isAudioType = type === "voice" || type === "audio";
-    const isAudioMime = (item.attachment.mime_type ?? "").startsWith("audio/");
-    if ((isAudioType || isAudioMime) && item.url) {
+    if (isAudioAttachment(item.attachment, item.url)) {
       return false;
     }
     return true;
@@ -104,9 +111,16 @@ export default function MessageAttachments({
               onClick={() => onPlayVoice(attachmentKey, url as string)}
               aria-label="Play voice message"
             >
-              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M8 5l11 7-11 7V5z" />
-              </svg>
+              {isPlaying ? (
+                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
+                  <rect x="6" y="5" width="4" height="14" rx="1" />
+                  <rect x="14" y="5" width="4" height="14" rx="1" />
+                </svg>
+              ) : (
+                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M8 5l11 7-11 7V5z" />
+                </svg>
+              )}
             </button>
             <div className="flex flex-1 items-center gap-1">
               {waveformHeights.map((height, index) => (

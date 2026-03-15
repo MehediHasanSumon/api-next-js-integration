@@ -2263,6 +2263,12 @@ export default function MessageThreadPage() {
         audio.src = url;
       }
 
+      if (!audio.paused) {
+        audio.pause();
+        setPlayingVoiceId((current) => (current === attachmentId ? null : current));
+        return;
+      }
+
       audioRefMap.current.forEach((item, id) => {
         if (id !== attachmentId) {
           item.pause();
