@@ -22,9 +22,11 @@ class StartConversationRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'recipient_user_id' => 'nullable|integer|exists:users,id|required_without:recipient_email',
-            'recipient_email' => 'nullable|email|exists:users,email|required_without:recipient_user_id',
+            'recipient_user_id' => 'nullable|integer|exists:users,id|required_without_all:recipient_email,participant_ids',
+            'recipient_email' => 'nullable|email|exists:users,email|required_without_all:recipient_user_id,participant_ids',
+            'participant_ids' => 'nullable|array|min:1|required_without_all:recipient_user_id,recipient_email',
+            'participant_ids.*' => 'integer|distinct|exists:users,id',
+            'title' => 'nullable|string|max:255',
         ];
     }
 }
-

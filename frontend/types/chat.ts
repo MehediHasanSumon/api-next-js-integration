@@ -39,6 +39,11 @@ export interface ChatUser {
   last_seen_at?: string | null;
 }
 
+export interface DirectoryUser {
+  id: number;
+  name: string;
+}
+
 export interface Attachment {
   id: MessageId;
   message_id: MessageId;
@@ -208,6 +213,8 @@ export interface ConversationActionResponse {
 export interface StartConversationPayload {
   recipient_user_id?: number;
   recipient_email?: string;
+  participant_ids?: number[];
+  title?: string;
 }
 
 export interface StartConversationResponse {

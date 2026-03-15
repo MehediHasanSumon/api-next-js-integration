@@ -2,6 +2,7 @@ import api from "@/lib/axios";
 import type {
   Attachment,
   ChatUser,
+  DirectoryUser,
   Conversation,
   ConversationActionResponse,
   ConversationId,
@@ -41,6 +42,7 @@ export type {
   Attachment,
   AttachmentPayload,
   ChatUser,
+  DirectoryUser,
   Conversation,
   ConversationActionResponse,
   ConversationFilter,
@@ -153,6 +155,17 @@ const normalizeChatUser = (value: unknown): ChatUser | undefined => {
     name: toNullableString(value.name) ?? "",
     email: toNullableString(value.email) ?? "",
     last_seen_at: toNullableString(value.last_seen_at ?? value.lastSeenAt),
+  };
+};
+
+const normalizeDirectoryUser = (value: unknown): DirectoryUser | null => {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  return {
+    id: toNumber(value.id),
+    name: toNullableString(value.name) ?? "",
   };
 };
 
@@ -454,6 +467,18 @@ export const listConversations = async (
   return normalizePaginatedConversationList(data);
 };
 
+export const listChatUsers = async (
+  params: { search?: string; limit?: number } = {}
+): Promise<DirectoryUser[]> => {
+  const { data } = await api.get<{ data: unknown[] }>("/chat/users", {
+    params: cleanParams(params),
+  });
+
+  return Array.isArray(data.data)
+    ? data.data.map(normalizeDirectoryUser).filter((item): item is DirectoryUser => item !== null)
+    : [];
+};
+
 export const showConversation = async (conversationId: ConversationId): Promise<ConversationShowResponse> => {
   const { data } = await api.get<ConversationShowResponse>(conversationPath(conversationId));
   return normalizeConversationShowResponse(data);
@@ -627,6 +652,7 @@ export const unarchiveConversation = async (
 const chatApi = {
   startConversation,
   listConversations,
+  listChatUsers,
   showConversation,
   listMessages,
   sendMessage,

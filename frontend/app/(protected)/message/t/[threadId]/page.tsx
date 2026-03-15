@@ -2526,10 +2526,10 @@ export default function MessageThreadPage() {
             title="Chats"
             action={
               <Link
-                href="/masseges"
+                href="/masseges?new=1"
                 className="inline-flex items-center rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-600 shadow-sm hover:bg-slate-100"
               >
-                Inbox
+                New Chat
               </Link>
             }
             searchValue={searchQuery}

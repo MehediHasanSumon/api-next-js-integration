@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import type { AxiosError } from "axios";
 import ProtectedShell from "@/components/ProtectedShell";
 import Button from "@/components/Button";
 import MessengerLayout from "@/components/messenger/MessengerLayout";
 import MessengerSidebar from "@/components/messenger/MessengerSidebar";
-import { startConversation } from "@/lib/chat-api";
+import NewChatModal from "@/components/messenger/NewChatModal";
+import { listChatUsers, listConversations, startConversation, type DirectoryUser, type ConversationListItem } from "@/lib/chat-api";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { fetchInboxThreads } from "@/store/chatSlice";
 
@@ -16,6 +17,7 @@ type ThreadFilter = "inbox" | "unread";
 
 export default function MassegesPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const dispatch = useAppDispatch();
   const threads = useAppSelector((state) => state.chat.threads);
   const isLoading = useAppSelector((state) => state.chat.loading);
@@ -23,17 +25,51 @@ export default function MassegesPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [filter, setFilter] = useState<ThreadFilter>("inbox");
   const [isNewChatOpen, setIsNewChatOpen] = useState(false);
-  const [newChatEmail, setNewChatEmail] = useState("");
   const [newChatError, setNewChatError] = useState<string | null>(null);
   const [isCreatingChat, setIsCreatingChat] = useState(false);
+  const [chatUsers, setChatUsers] = useState<DirectoryUser[]>([]);
+  const [chatUsersError, setChatUsersError] = useState<string | null>(null);
+  const [chatUsersLoading, setChatUsersLoading] = useState(false);
+  const [chatUserSearch, setChatUserSearch] = useState("");
+  const [selectedUserIds, setSelectedUserIds] = useState<number[]>([]);
+  const [conversationDirectory, setConversationDirectory] = useState<ConversationListItem[]>([]);
 
   const fetchConversations = useCallback(async () => {
     await dispatch(fetchInboxThreads());
+
+    try {
+      const response = await listConversations({ filter: "all", per_page: 200 });
+      setConversationDirectory(response.data);
+    } catch {
+      setConversationDirectory([]);
+    }
   }, [dispatch]);
 
   useEffect(() => {
     void fetchConversations();
   }, [fetchConversations]);
+
+  const loadChatUsers = useCallback(async () => {
+    setChatUsersLoading(true);
+    setChatUsersError(null);
+
+    try {
+      const users = await listChatUsers({ limit: 500 });
+      setChatUsers(users);
+    } catch (error) {
+      const axiosError = error as AxiosError<{ message?: string }>;
+      setChatUsersError(axiosError.response?.data?.message || "Failed to load users.");
+      setChatUsers([]);
+    } finally {
+      setChatUsersLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isNewChatOpen) {
+      void loadChatUsers();
+    }
+  }, [isNewChatOpen, loadChatUsers]);
 
   const unreadCount = useMemo(() => threads.reduce((sum, thread) => sum + thread.unread, 0), [threads]);
 
@@ -59,12 +95,60 @@ export default function MassegesPage() {
     });
   }, [filter, searchQuery, threads]);
 
+  const filteredChatUsers = useMemo(() => {
+    const query = chatUserSearch.trim().toLowerCase();
+    if (!query) {
+      return chatUsers;
+    }
+
+    return chatUsers.filter((user) => user.name.toLowerCase().includes(query));
+  }, [chatUserSearch, chatUsers]);
+
+  const selectedUserIdsSet = useMemo(() => new Set(selectedUserIds), [selectedUserIds]);
+
+  const toggleUserSelection = (userId: number) => {
+    setSelectedUserIds((previous) =>
+      previous.includes(userId) ? previous.filter((id) => id !== userId) : [...previous, userId]
+    );
+  };
+
+  const openNewChatModal = useCallback(() => {
+    setIsNewChatOpen(true);
+    setNewChatError(null);
+    setSelectedUserIds([]);
+    setChatUserSearch("");
+  }, []);
+
+  const closeNewChatModal = useCallback(() => {
+    setIsNewChatOpen(false);
+    setNewChatError(null);
+    setSelectedUserIds([]);
+    setChatUserSearch("");
+  }, []);
+
+  useEffect(() => {
+    if (searchParams?.get("new") === "1") {
+      openNewChatModal();
+    }
+  }, [openNewChatModal, searchParams]);
+
   const previewThread = filteredThreads[0] ?? threads[0] ?? null;
 
+  const findDirectConversationId = useCallback(
+    (userId: number): string | null => {
+      const match = conversationDirectory.find(
+        (conversation) =>
+          conversation.type === "direct" && Number(conversation.counterpart?.id) === Number(userId)
+      );
+
+      return match ? String(match.conversation_id) : null;
+    },
+    [conversationDirectory]
+  );
+
   const handleStartConversation = async () => {
-    const email = newChatEmail.trim().toLowerCase();
-    if (!email) {
-      setNewChatError("Please enter a valid email.");
+    if (selectedUserIds.length === 0) {
+      setNewChatError("Select at least one user.");
       return;
     }
 
@@ -72,9 +156,20 @@ export default function MassegesPage() {
     setIsCreatingChat(true);
 
     try {
-      const response = await startConversation({ recipient_email: email });
-      setIsNewChatOpen(false);
-      setNewChatEmail("");
+      if (selectedUserIds.length === 1) {
+        const existingConversationId = findDirectConversationId(selectedUserIds[0]);
+        if (existingConversationId) {
+          closeNewChatModal();
+          router.push(`/message/t/${existingConversationId}`);
+          return;
+        }
+      }
+
+      const response =
+        selectedUserIds.length === 1
+          ? await startConversation({ recipient_user_id: selectedUserIds[0] })
+          : await startConversation({ participant_ids: selectedUserIds });
+      closeNewChatModal();
       await fetchConversations();
       router.push(`/message/t/${response.conversation_id}`);
     } catch (error) {
@@ -93,10 +188,7 @@ export default function MassegesPage() {
             title="Chats"
             action={
               <div className="flex items-center gap-2">
-                <span className="rounded-full border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-600 shadow-sm">
-                  {filteredThreads.length}
-                </span>
-                <Button type="button" size="sm" variant="outline" className="h-7 rounded-full px-3 text-[11px]" onClick={() => setIsNewChatOpen(true)}>
+                <Button type="button" size="sm" variant="outline" className="h-7 rounded-full px-3 text-[11px]" onClick={openNewChatModal}>
                   New Chat
                 </Button>
               </div>
@@ -231,40 +323,20 @@ export default function MassegesPage() {
           </section>
       </MessengerLayout>
 
-      {isNewChatOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <button
-            type="button"
-            aria-label="Close new chat modal"
-            className="absolute inset-0 bg-slate-900/50"
-            onClick={isCreatingChat ? undefined : () => setIsNewChatOpen(false)}
-          />
-          <div className="relative w-full max-w-md rounded-2xl border border-white/60 bg-white p-6 shadow-2xl">
-            <h2 className="text-lg font-semibold text-slate-900">Start New Conversation</h2>
-            <p className="mt-2 text-sm text-slate-600">Enter recipient email address to create or reopen a direct chat.</p>
-
-            <label className="mt-4 block text-sm font-medium text-slate-700">Recipient Email</label>
-            <input
-              type="email"
-              value={newChatEmail}
-              onChange={(event) => setNewChatEmail(event.target.value)}
-              placeholder="user@example.com"
-              className="mt-1.5 h-10 w-full rounded-md border border-slate-300 px-3 text-sm text-slate-900 shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-              disabled={isCreatingChat}
-            />
-            {newChatError && <p className="mt-2 text-xs text-rose-600">{newChatError}</p>}
-
-            <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-              <Button type="button" variant="outline" onClick={() => setIsNewChatOpen(false)} disabled={isCreatingChat}>
-                Cancel
-              </Button>
-              <Button type="button" onClick={() => void handleStartConversation()} loading={isCreatingChat} disabled={isCreatingChat}>
-                Start Chat
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+      <NewChatModal
+        isOpen={isNewChatOpen}
+        error={newChatError}
+        isCreating={isCreatingChat}
+        users={filteredChatUsers}
+        selectedUserIds={selectedUserIdsSet}
+        searchValue={chatUserSearch}
+        isLoading={chatUsersLoading}
+        usersError={chatUsersError}
+        onClose={closeNewChatModal}
+        onSearchChange={setChatUserSearch}
+        onToggleUser={toggleUserSelection}
+        onSubmit={() => void handleStartConversation()}
+      />
     </ProtectedShell>
   );
 }

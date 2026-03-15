@@ -24,77 +24,148 @@ class ConversationController extends Controller
         $validated = $request->validated();
         $authUser = $request->user();
 
-        $recipient = isset($validated['recipient_user_id'])
-            ? User::query()->findOrFail((int) $validated['recipient_user_id'])
-            : User::query()->where('email', $validated['recipient_email'])->firstOrFail();
+        $participantIds = collect($validated['participant_ids'] ?? [])
+            ->map(fn ($id) => (int) $id)
+            ->filter(fn (int $id) => $id > 0)
+            ->unique()
+            ->values()
+            ->all();
 
-        if ((int) $recipient->id === (int) $authUser->id) {
+        if (!empty($participantIds)) {
+            $participantIds = array_values(array_diff($participantIds, [(int) $authUser->id]));
+        }
+
+        if (array_key_exists('participant_ids', $validated) && empty($participantIds)) {
+            throw ValidationException::withMessages([
+                'participant_ids' => ['Select at least one other user.'],
+            ]);
+        }
+
+        $recipient = null;
+        if (count($participantIds) === 1) {
+            $recipient = User::query()->findOrFail($participantIds[0]);
+        } elseif (empty($participantIds)) {
+            $recipient = isset($validated['recipient_user_id'])
+                ? User::query()->findOrFail((int) $validated['recipient_user_id'])
+                : User::query()->where('email', $validated['recipient_email'])->firstOrFail();
+        }
+
+        if ($recipient && (int) $recipient->id === (int) $authUser->id) {
             throw ValidationException::withMessages([
                 'recipient_user_id' => ['You cannot start a conversation with yourself.'],
             ]);
         }
 
-        $lowId = min((int) $authUser->id, (int) $recipient->id);
-        $highId = max((int) $authUser->id, (int) $recipient->id);
-
-        [$conversation, $created] = DB::transaction(function () use ($authUser, $recipient, $lowId, $highId) {
-            $conversation = Conversation::query()
-                ->withTrashed()
-                ->where('type', 'direct')
-                ->where('direct_user_low_id', $lowId)
-                ->where('direct_user_high_id', $highId)
-                ->first();
-
-            $created = false;
-
-            if (!$conversation) {
+        if (count($participantIds) > 1) {
+            [$conversation, $created] = DB::transaction(function () use ($authUser, $participantIds, $validated) {
                 $conversation = Conversation::query()->create([
-                    'type' => 'direct',
+                    'type' => 'group',
                     'created_by' => $authUser->id,
-                    'direct_user_low_id' => $lowId,
-                    'direct_user_high_id' => $highId,
+                    'title' => $validated['title'] ?? null,
                 ]);
-                $created = true;
-            } elseif ($conversation->trashed()) {
-                $conversation->restore();
-            }
 
-            $conversation->participants()->updateOrCreate(
-                ['user_id' => $authUser->id],
-                [
+                $now = now();
+
+                $conversation->participants()->create([
+                    'user_id' => $authUser->id,
                     'role' => 'owner',
                     'participant_state' => 'accepted',
-                    'accepted_at' => now(),
-                    'declined_at' => null,
-                    'hidden_at' => null,
-                    'archived_at' => null,
-                ]
-            );
-
-            $recipientParticipant = $conversation->participants()->where('user_id', $recipient->id)->first();
-
-            if (!$recipientParticipant) {
-                $conversation->participants()->create([
-                    'user_id' => $recipient->id,
-                    'role' => 'member',
-                    'participant_state' => 'pending',
-                    'accepted_at' => null,
+                    'accepted_at' => $now,
                     'declined_at' => null,
                     'hidden_at' => null,
                     'archived_at' => null,
                 ]);
-            } elseif ($recipientParticipant->participant_state !== 'accepted') {
-                $recipientParticipant->update([
-                    'participant_state' => 'pending',
-                    'accepted_at' => null,
-                    'declined_at' => null,
-                    'hidden_at' => null,
-                    'archived_at' => null,
-                ]);
-            }
 
-            return [$conversation->fresh(), $created];
-        });
+                $participants = User::query()
+                    ->whereIn('id', $participantIds)
+                    ->get(['id', 'name']);
+
+                foreach ($participants as $participant) {
+                    $conversation->participants()->create([
+                        'user_id' => $participant->id,
+                        'role' => 'member',
+                        'participant_state' => 'accepted',
+                        'accepted_at' => $now,
+                        'declined_at' => null,
+                        'hidden_at' => null,
+                        'archived_at' => null,
+                    ]);
+                }
+
+                if (empty($conversation->title)) {
+                    $title = $participants->pluck('name')->filter()->take(3)->implode(', ');
+                    $conversation->update([
+                        'title' => $title !== '' ? $title : 'Group chat',
+                    ]);
+                }
+
+                return [$conversation->fresh(), true];
+            });
+        } else {
+            $recipient = $recipient ?? User::query()->findOrFail($participantIds[0] ?? null);
+
+            $lowId = min((int) $authUser->id, (int) $recipient->id);
+            $highId = max((int) $authUser->id, (int) $recipient->id);
+
+            [$conversation, $created] = DB::transaction(function () use ($authUser, $recipient, $lowId, $highId) {
+                $conversation = Conversation::query()
+                    ->withTrashed()
+                    ->where('type', 'direct')
+                    ->where('direct_user_low_id', $lowId)
+                    ->where('direct_user_high_id', $highId)
+                    ->first();
+
+                $created = false;
+
+                if (!$conversation) {
+                    $conversation = Conversation::query()->create([
+                        'type' => 'direct',
+                        'created_by' => $authUser->id,
+                        'direct_user_low_id' => $lowId,
+                        'direct_user_high_id' => $highId,
+                    ]);
+                    $created = true;
+                } elseif ($conversation->trashed()) {
+                    $conversation->restore();
+                }
+
+                $conversation->participants()->updateOrCreate(
+                    ['user_id' => $authUser->id],
+                    [
+                        'role' => 'owner',
+                        'participant_state' => 'accepted',
+                        'accepted_at' => now(),
+                        'declined_at' => null,
+                        'hidden_at' => null,
+                        'archived_at' => null,
+                    ]
+                );
+
+                $recipientParticipant = $conversation->participants()->where('user_id', $recipient->id)->first();
+
+                if (!$recipientParticipant) {
+                    $conversation->participants()->create([
+                        'user_id' => $recipient->id,
+                        'role' => 'member',
+                        'participant_state' => 'pending',
+                        'accepted_at' => null,
+                        'declined_at' => null,
+                        'hidden_at' => null,
+                        'archived_at' => null,
+                    ]);
+                } elseif ($recipientParticipant->participant_state !== 'accepted') {
+                    $recipientParticipant->update([
+                        'participant_state' => 'pending',
+                        'accepted_at' => null,
+                        'declined_at' => null,
+                        'hidden_at' => null,
+                        'archived_at' => null,
+                    ]);
+                }
+
+                return [$conversation->fresh(), $created];
+            });
+        }
 
         return response()->json([
             'message' => $created ? 'Conversation created successfully.' : 'Conversation opened successfully.',
