@@ -14,7 +14,9 @@ const initialState: ChatState = {
   error: null,
 };
 
-export const fetchInboxThreads = createAsyncThunk("chat/fetchInboxThreads", async () => {
+type FetchThreadsOptions = { silent?: boolean } | undefined;
+
+export const fetchInboxThreads = createAsyncThunk("chat/fetchInboxThreads", async (_options: FetchThreadsOptions) => {
   const response = await listConversations({ filter: "inbox", per_page: 100 });
   return response.data.map(mapConversationToThread);
 });
@@ -60,16 +62,26 @@ const chatSlice = createSlice({
   },
   extraReducers: (builder) => {
     builder
-      .addCase(fetchInboxThreads.pending, (state) => {
+      .addCase(fetchInboxThreads.pending, (state, action) => {
+        if (action.meta.arg?.silent) {
+          return;
+        }
+
         state.loading = true;
         state.error = null;
       })
       .addCase(fetchInboxThreads.fulfilled, (state, action) => {
-        state.loading = false;
-        state.error = null;
+        if (!action.meta.arg?.silent) {
+          state.loading = false;
+          state.error = null;
+        }
         state.threads = action.payload;
       })
-      .addCase(fetchInboxThreads.rejected, (state) => {
+      .addCase(fetchInboxThreads.rejected, (state, action) => {
+        if (action.meta.arg?.silent) {
+          return;
+        }
+
         state.loading = false;
         state.error = "Failed to load conversations.";
       });

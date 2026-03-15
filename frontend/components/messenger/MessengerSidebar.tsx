@@ -18,7 +18,7 @@ export default function MessengerSidebar({
   children,
 }: MessengerSidebarProps) {
   return (
-    <aside className="flex h-full min-h-0 flex-col border-r border-slate-200/80 bg-white/90 backdrop-blur animate-[messengerRise_0.4s_ease]">
+    <aside className="flex h-full min-h-0 flex-col border-r border-slate-200/80 bg-white/90 backdrop-blur">
       <div className="border-b border-slate-200/80 px-4 pb-3 pt-4">
         <div className="mb-3 flex items-center justify-between">
           <div>

@@ -2525,7 +2525,7 @@ export default function MessageThreadPage() {
             activeThreadId={threadId}
           />
 
-          <section className={`flex h-full min-h-0 flex-col bg-[radial-gradient(circle_at_top,#ffffff_0%,#f1f5f9_45%,#eaf2ff_100%)] animate-[messengerRise_0.5s_ease] ${showInfoPanel ? "border-r border-slate-200/80" : ""}`}>
+          <section className={`flex h-full min-h-0 flex-col bg-[radial-gradient(circle_at_top,#ffffff_0%,#f1f5f9_45%,#eaf2ff_100%)] ${showInfoPanel ? "border-r border-slate-200/80" : ""}`}>
             <MessengerHeader
               title={activeThread?.name ?? "Conversation"}
               subtitle={presenceSubtitle}

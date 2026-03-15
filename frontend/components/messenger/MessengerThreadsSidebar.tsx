@@ -24,6 +24,7 @@ interface MessengerThreadsSidebarProps {
 }
 
 export default function MessengerThreadsSidebar({
+  threads,
   filteredThreads,
   searchQuery,
   onSearchChange,
@@ -89,9 +90,21 @@ export default function MessengerThreadsSidebar({
           </div>
         }
       >
-        {isLoading ? (
-          <div className="rounded-2xl border border-dashed border-slate-200 bg-white/80 p-4 text-center">
-            <p className="text-sm font-medium text-slate-700">Loading conversations...</p>
+        {isLoading && threads.length === 0 ? (
+          <div className="space-y-2">
+            {Array.from({ length: 6 }).map((_, index) => (
+              <div
+                key={`thread-skeleton-${index}`}
+                className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-white/80 px-3 py-2"
+              >
+                <div className="h-10 w-10 animate-pulse rounded-full bg-slate-200" />
+                <div className="flex-1 space-y-2">
+                  <div className="h-3 w-2/3 animate-pulse rounded-full bg-slate-200" />
+                  <div className="h-2.5 w-1/2 animate-pulse rounded-full bg-slate-100" />
+                </div>
+                <div className="h-3 w-8 animate-pulse rounded-full bg-slate-200" />
+              </div>
+            ))}
           </div>
         ) : errorMessage ? (
           <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-center">

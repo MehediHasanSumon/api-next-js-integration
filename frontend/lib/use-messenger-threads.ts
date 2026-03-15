@@ -76,13 +76,14 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
 
   const threadsRef = useRef<ThreadItem[]>([]);
   const subscribedRef = useRef<Set<string>>(new Set());
+  const initialLoadRef = useRef(false);
 
   useEffect(() => {
     threadsRef.current = threads;
   }, [threads]);
 
-  const refreshThreads = useCallback(async () => {
-    await dispatch(fetchInboxThreads());
+  const refreshThreads = useCallback(async (options?: { silent?: boolean }) => {
+    await dispatch(fetchInboxThreads(options));
 
     try {
       const response = await listConversations({ filter: "all", per_page: 200 });
@@ -93,8 +94,13 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
   }, [dispatch]);
 
   useEffect(() => {
-    void refreshThreads();
-  }, [refreshThreads]);
+    if (initialLoadRef.current) {
+      return;
+    }
+
+    initialLoadRef.current = true;
+    void refreshThreads({ silent: threads.length > 0 });
+  }, [refreshThreads, threads.length]);
 
   const unreadCount = useMemo(() => threads.reduce((sum, thread) => sum + thread.unread, 0), [threads]);
 
@@ -231,7 +237,7 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
       const conversationId = String(payload.conversation_id);
       const existing = threadsRef.current.find((thread) => thread.id === conversationId);
       if (!existing) {
-        void refreshThreads();
+        void refreshThreads({ silent: true });
         return;
       }
 
