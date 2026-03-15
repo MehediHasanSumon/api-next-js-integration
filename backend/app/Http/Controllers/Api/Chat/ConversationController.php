@@ -194,7 +194,7 @@ class ConversationController extends Controller
             ]);
 
         if ($filter === 'inbox') {
-            $query->where('participant_state', 'accepted')
+            $query->whereIn('participant_state', ['accepted', 'pending'])
                 ->whereNull('archived_at')
                 ->whereNull('hidden_at');
         } elseif ($filter === 'requests') {

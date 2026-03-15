@@ -3,6 +3,7 @@
 namespace App\Services\Chat;
 
 use App\Events\Chat\ConversationRead;
+use App\Events\Chat\ConversationThreadUpdated;
 use App\Events\Chat\MessageEdited;
 use App\Events\Chat\MessageReactionUpdated;
 use App\Events\Chat\MessageRemovedEverywhere;
@@ -68,6 +69,20 @@ class ChatMessagingService
         });
 
         broadcast(new MessageSent($conversation->id, $message->toArray()))->toOthers();
+        $recipientIds = $conversation->participants()
+            ->where('user_id', '!=', $sender->id)
+            ->whereNull('hidden_at')
+            ->pluck('user_id')
+            ->map(fn ($id) => (int) $id)
+            ->values()
+            ->all();
+        if ($recipientIds !== []) {
+            broadcast(new ConversationThreadUpdated(
+                (int) $conversation->id,
+                $message->toArray(),
+                $recipientIds
+            ))->toOthers();
+        }
 
         return $message;
     }
@@ -143,6 +158,20 @@ class ChatMessagingService
                 'client_uid' => $forwardedMessage->client_uid,
             ]
         ))->toOthers();
+        $recipientIds = $targetConversation->participants()
+            ->where('user_id', '!=', $actor->id)
+            ->whereNull('hidden_at')
+            ->pluck('user_id')
+            ->map(fn ($id) => (int) $id)
+            ->values()
+            ->all();
+        if ($recipientIds !== []) {
+            broadcast(new ConversationThreadUpdated(
+                (int) $targetConversation->id,
+                $forwardedMessage->toArray(),
+                $recipientIds
+            ))->toOthers();
+        }
 
         return $forwardedMessage;
     }

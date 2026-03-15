@@ -44,6 +44,24 @@ interface ChatMessageSentEvent {
   };
 }
 
+interface ChatThreadUpdatedEvent {
+  conversation_id: number | string;
+  message: {
+    id: number | string;
+    sender_id?: number;
+    body?: string | null;
+    message_type?: string;
+  };
+  sent_at?: string;
+}
+
+interface ChatConversationRequestUpdatedEvent {
+  conversation_id: number | string;
+  acted_by_user_id: number;
+  action: "accept" | "decline";
+  sent_at?: string;
+}
+
 interface ChatConversationReadEvent {
   conversation_id: number | string;
   user_id: number;
@@ -76,6 +94,7 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
 
   const threadsRef = useRef<ThreadItem[]>([]);
   const subscribedRef = useRef<Set<string>>(new Set());
+  const userChannelRef = useRef<string | null>(null);
   const initialLoadRef = useRef(false);
 
   useEffect(() => {
@@ -311,6 +330,49 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
       subscribedRef.current.add(id);
     });
   }, [handleConversationRead, handleMessageSent, threads]);
+
+  useEffect(() => {
+    const echo = getEcho();
+    if (!echo || !currentUserId) {
+      return;
+    }
+
+    const channelName = `user.${currentUserId}`;
+    if (userChannelRef.current === channelName) {
+      return;
+    }
+
+    if (userChannelRef.current) {
+      echo.leave(userChannelRef.current);
+    }
+
+    userChannelRef.current = channelName;
+    const channel = echo.private(channelName);
+
+    const handleThreadUpdated = (payload: ChatThreadUpdatedEvent) => {
+      const conversationId = String(payload.conversation_id);
+      const existing = threadsRef.current.find((thread) => thread.id === conversationId);
+      if (existing) {
+        return;
+      }
+
+      void refreshThreads({ silent: true });
+    };
+
+    const handleRequestUpdated = (_payload: ChatConversationRequestUpdatedEvent) => {
+      void refreshThreads({ silent: true });
+    };
+
+    channel.listen(".chat.thread.updated", handleThreadUpdated);
+    channel.listen(".chat.conversation.request.updated", handleRequestUpdated);
+
+    return () => {
+      echo.leave(channelName);
+      if (userChannelRef.current === channelName) {
+        userChannelRef.current = null;
+      }
+    };
+  }, [currentUserId, refreshThreads]);
 
   useEffect(() => {
     return () => {
