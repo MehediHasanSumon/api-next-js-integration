@@ -208,6 +208,11 @@ class ConversationController extends Controller
         }
 
         $paginator = $query
+            ->orderByDesc(
+                Conversation::query()
+                    ->select('last_message_at')
+                    ->whereColumn('conversations.id', 'conversation_participants.conversation_id')
+            )
             ->orderByDesc('updated_at')
             ->paginate($perPage)
             ->withQueryString();
