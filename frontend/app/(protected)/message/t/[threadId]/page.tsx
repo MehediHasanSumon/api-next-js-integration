@@ -8,7 +8,7 @@ import { Forward, PencilLine, Search, SmilePlus, Trash2, X } from "lucide-react"
 import ProtectedShell from "@/components/ProtectedShell";
 import Button from "@/components/Button";
 import MessengerLayout from "@/components/messenger/MessengerLayout";
-import MessengerSidebar from "@/components/messenger/MessengerSidebar";
+import MessengerThreadsSidebar from "@/components/messenger/MessengerThreadsSidebar";
 import MessengerHeader from "@/components/messenger/MessengerHeader";
 import MessageBubble from "@/components/messenger/MessageBubble";
 import MessengerInfoPanel from "@/components/messenger/MessengerInfoPanel";
@@ -37,8 +37,9 @@ import { getPresenceStatus, pingPresence } from "@/lib/presence-api";
 import { formatLastSeen, getNowFromServerOffset, resolveServerClockOffsetMs } from "@/lib/presence-time";
 import { formatThreadRelativeTime, type ThreadItem } from "@/lib/chat-threads";
 import { getEcho } from "@/lib/echo";
+import { useMessengerThreads } from "@/lib/use-messenger-threads";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
-import { fetchInboxThreads, patchThread } from "@/store/chatSlice";
+import { patchThread } from "@/store/chatSlice";
 import type {
   Attachment,
   Conversation,
@@ -482,10 +483,20 @@ export default function MessageThreadPage() {
 
   const currentUser = useAppSelector((state) => state.auth.user);
   const currentUserId = currentUser?.id ?? null;
-  const threads = useAppSelector((state) => state.chat.threads);
-
-  const [searchQuery, setSearchQuery] = useState("");
-  const [filter, setFilter] = useState<ThreadFilter>("all");
+  const {
+    threads,
+    filteredThreads,
+    searchQuery,
+    setSearchQuery,
+    filter,
+    setFilter,
+    unreadCount,
+    isLoading: threadsLoading,
+    errorMessage: threadsError,
+    refreshThreads,
+    openNewChatModal,
+    newChatModalState,
+  } = useMessengerThreads({ activeThreadId: threadId });
   const [draft, setDraft] = useState("");
   const [showInfoPanel, setShowInfoPanel] = useState(true);
   const audioRefMap = useRef<Map<string, HTMLAudioElement>>(new Map());
@@ -809,34 +820,6 @@ export default function MessageThreadPage() {
     typingIndicatorText || presenceSubtitle.toLowerCase().includes("online") ? "text-emerald-600" : "text-slate-500";
   const isPresenceOnline = Boolean(typingIndicatorText) || presenceSubtitle.toLowerCase().includes("online");
 
-  const unreadCount = useMemo(() => threads.reduce((sum, thread) => sum + thread.unread, 0), [threads]);
-  const onlineCount = 0;
-
-  const filteredThreads = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
-
-    return threads.filter((thread) => {
-      const matchesQuery =
-        query === "" ||
-        thread.name.toLowerCase().includes(query) ||
-        thread.lastMessage.toLowerCase().includes(query) ||
-        thread.handle.toLowerCase().includes(query);
-
-      if (!matchesQuery) {
-        return false;
-      }
-
-      if (filter === "unread") {
-        return thread.unread > 0;
-      }
-
-      if (filter === "online") {
-        return false;
-      }
-
-      return true;
-    });
-  }, [filter, searchQuery, threads]);
 
   const filteredForwardTargets = useMemo(() => {
     const query = forwardSearch.trim().toLowerCase();
@@ -857,10 +840,6 @@ export default function MessageThreadPage() {
       return labelLower.includes(query) || emailLower.includes(query) || idMatch;
     });
   }, [forwardSearch, forwardTargets]);
-
-  const refreshThreads = useCallback(async () => {
-    await dispatch(fetchInboxThreads());
-  }, [dispatch]);
 
   const refreshConversation = useCallback(async (): Promise<ConversationShowResponse | null> => {
     if (!threadId) {
@@ -2522,74 +2501,21 @@ export default function MessageThreadPage() {
       showPageHeader={false}
     >
       <MessengerLayout showInfo={showInfoPanel}>
-          <MessengerSidebar
-            title="Chats"
-            action={
-              <Link
-                href="/masseges?new=1"
-                className="inline-flex items-center rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-600 shadow-sm hover:bg-slate-100"
-              >
-                New Chat
-              </Link>
-            }
-            searchValue={searchQuery}
+          <MessengerThreadsSidebar
+            threads={threads}
+            filteredThreads={filteredThreads}
+            searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
-            filters={
-              <div className="grid grid-cols-3 gap-1">
-                <Button type="button" variant={filter === "all" ? "secondary" : "ghost"} size="sm" className="h-8 rounded-full text-xs" onClick={() => setFilter("all")}>
-                  All
-                </Button>
-                <Button type="button" variant={filter === "unread" ? "secondary" : "ghost"} size="sm" className="h-8 rounded-full text-xs" onClick={() => setFilter("unread")}>
-                  Unread {unreadCount > 0 ? `(${unreadCount})` : ""}
-                </Button>
-                <Button type="button" variant="ghost" size="sm" className="h-8 rounded-full text-xs" disabled title="Online filter will use realtime presence later">
-                  Online ({onlineCount})
-                </Button>
-              </div>
-            }
-          >
-            {filteredThreads.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-slate-200 bg-white/80 p-4 text-center">
-                <p className="text-sm font-medium text-slate-700">No conversations found</p>
-                <p className="mt-1 text-xs text-slate-500">Try a different search or filter.</p>
-              </div>
-            ) : (
-              <div className="space-y-1">
-                {filteredThreads.map((thread) => {
-                  const active = thread.id === threadId;
-
-                  return (
-                    <Link
-                      key={thread.id}
-                      href={`/message/t/${thread.id}`}
-                      className={`group flex items-start gap-3 rounded-2xl px-3 py-2 transition ${
-                        active ? "bg-[color:var(--messenger-soft)] ring-1 ring-slate-200" : "hover:bg-slate-100/80"
-                      }`}
-                    >
-                      <div className="relative mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-sky-500 to-blue-600 text-sm font-semibold text-white">
-                        {thread.name.charAt(0)}
-                      </div>
-
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center justify-between gap-2">
-                          <p className="truncate text-sm font-semibold text-slate-900">{thread.name}</p>
-                          <span className="shrink-0 text-[11px] text-slate-500">{thread.lastTime}</span>
-                        </div>
-                        <div className="mt-0.5 flex items-center justify-between gap-2">
-                          <p className="truncate text-xs text-slate-500">{thread.lastMessage}</p>
-                          {thread.unread > 0 && (
-                            <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-[color:var(--messenger-blue)] px-1.5 text-[11px] font-semibold text-white">
-                              {thread.unread}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </Link>
-                  );
-                })}
-              </div>
-            )}
-          </MessengerSidebar>
+            filter={filter}
+            onFilterChange={setFilter}
+            unreadCount={unreadCount}
+            isLoading={threadsLoading}
+            errorMessage={threadsError}
+            onRetry={() => void refreshThreads()}
+            onOpenNewChat={openNewChatModal}
+            newChatModalState={newChatModalState}
+            activeThreadId={threadId}
+          />
 
           <section className={`flex h-full min-h-0 flex-col bg-[radial-gradient(circle_at_top,#ffffff_0%,#f1f5f9_45%,#eaf2ff_100%)] animate-[messengerRise_0.5s_ease] ${showInfoPanel ? "border-r border-slate-200/80" : ""}`}>
             <MessengerHeader
