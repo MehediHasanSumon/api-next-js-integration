@@ -30,10 +30,22 @@ const chatSlice = createSlice({
         return;
       }
 
-      state.threads[index] = {
+      const updated = {
         ...state.threads[index],
         ...action.payload.changes,
       };
+
+      const shouldBump =
+        Object.prototype.hasOwnProperty.call(action.payload.changes, "lastMessage") ||
+        Object.prototype.hasOwnProperty.call(action.payload.changes, "lastTime");
+
+      if (shouldBump && index > 0) {
+        state.threads.splice(index, 1);
+        state.threads.unshift(updated);
+        return;
+      }
+
+      state.threads[index] = updated;
     },
     upsertThread(state, action: PayloadAction<ThreadItem>) {
       const index = state.threads.findIndex((thread) => thread.id === action.payload.id);
@@ -66,4 +78,3 @@ const chatSlice = createSlice({
 
 export const { patchThread, upsertThread } = chatSlice.actions;
 export default chatSlice.reducer;
-

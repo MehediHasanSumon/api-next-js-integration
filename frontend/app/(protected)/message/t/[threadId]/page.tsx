@@ -1069,6 +1069,14 @@ export default function MessageThreadPage() {
           },
         };
       });
+      dispatch(
+        patchThread({
+          id: threadId,
+          changes: {
+            unread: 0,
+          },
+        })
+      );
     } catch {
       // Mark-read is best-effort; keep UX responsive even if endpoint fails.
     } finally {

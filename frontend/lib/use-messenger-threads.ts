@@ -44,6 +44,13 @@ interface ChatMessageSentEvent {
   };
 }
 
+interface ChatConversationReadEvent {
+  conversation_id: number | string;
+  user_id: number;
+  last_read_message_id: number;
+  read_at: string;
+}
+
 export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) => {
   const { activeThreadId } = options;
   const router = useRouter();
@@ -252,6 +259,34 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
     [activeThreadId, currentUserId, dispatch, refreshThreads]
   );
 
+  const handleConversationRead = useCallback(
+    (payload: ChatConversationReadEvent) => {
+      const conversationId = String(payload.conversation_id);
+      if (!currentUserId || Number(payload.user_id) !== Number(currentUserId)) {
+        return;
+      }
+
+      const existing = threadsRef.current.find((thread) => thread.id === conversationId);
+      if (!existing) {
+        return;
+      }
+
+      if (existing.unread === 0) {
+        return;
+      }
+
+      dispatch(
+        patchThread({
+          id: conversationId,
+          changes: {
+            unread: 0,
+          },
+        })
+      );
+    },
+    [currentUserId, dispatch]
+  );
+
   useEffect(() => {
     const echo = getEcho();
     if (!echo) {
@@ -266,9 +301,10 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
 
       const channel = echo.private(`conversation.${id}`);
       channel.listen(".chat.message.sent", handleMessageSent);
+      channel.listen(".chat.conversation.read", handleConversationRead);
       subscribedRef.current.add(id);
     });
-  }, [handleMessageSent, threads]);
+  }, [handleConversationRead, handleMessageSent, threads]);
 
   useEffect(() => {
     return () => {
