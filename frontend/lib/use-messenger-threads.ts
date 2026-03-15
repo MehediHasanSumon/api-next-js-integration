@@ -12,8 +12,9 @@ import {
   type DirectoryUser,
 } from "@/lib/chat-api";
 import type { ThreadItem } from "@/lib/chat-threads";
+import { getPresenceStatus } from "@/lib/presence-api";
 
-export type ThreadFilter = "inbox" | "unread";
+export type ThreadFilter = "inbox" | "unread" | "online";
 
 export interface NewChatModalState {
   isOpen: boolean;
@@ -69,6 +70,13 @@ interface ChatConversationReadEvent {
   read_at: string;
 }
 
+interface ChatUserPresenceUpdatedEvent {
+  user_id: number;
+  is_online: boolean;
+  last_seen_at: string | null;
+  sent_at?: string;
+}
+
 export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) => {
   const { activeThreadId } = options;
   const router = useRouter();
@@ -91,6 +99,7 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
   const [chatUserSearch, setChatUserSearch] = useState("");
   const [selectedUserIds, setSelectedUserIds] = useState<number[]>([]);
   const [conversationDirectory, setConversationDirectory] = useState<ConversationListItem[]>([]);
+  const [presenceByUserId, setPresenceByUserId] = useState<Record<number, { isOnline: boolean; lastSeenAt: string | null }>>({});
 
   const threadsRef = useRef<ThreadItem[]>([]);
   const subscribedRef = useRef<Set<string>>(new Set());
@@ -141,9 +150,60 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
         return thread.unread > 0;
       }
 
+      if (filter === "online") {
+        if (thread.participantState !== "accepted") {
+          return false;
+        }
+
+        if (thread.type !== "direct" || !thread.counterpartId) {
+          return false;
+        }
+
+        return Boolean(presenceByUserId[thread.counterpartId]?.isOnline);
+      }
+
       return true;
     });
-  }, [filter, searchQuery, threads]);
+  }, [filter, presenceByUserId, searchQuery, threads]);
+
+  const acceptedDirectCounterpartIds = useMemo(() => {
+    const ids = threads
+      .filter((thread) => thread.participantState === "accepted" && thread.type === "direct" && thread.counterpartId)
+      .map((thread) => thread.counterpartId as number);
+
+    return Array.from(new Set(ids));
+  }, [threads]);
+
+  useEffect(() => {
+    if (acceptedDirectCounterpartIds.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+
+    getPresenceStatus(acceptedDirectCounterpartIds)
+      .then((response) => {
+        if (cancelled) {
+          return;
+        }
+
+        setPresenceByUserId((previous) => {
+          const next = { ...previous };
+          response.data.forEach((item) => {
+            next[item.user_id] = {
+              isOnline: item.is_online,
+              lastSeenAt: item.last_seen_at,
+            };
+          });
+          return next;
+        });
+      })
+      .catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [acceptedDirectCounterpartIds]);
 
   const loadChatUsers = useCallback(async () => {
     setChatUsersLoading(true);
@@ -166,6 +226,38 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
       void loadChatUsers();
     }
   }, [isNewChatOpen, loadChatUsers]);
+
+  useEffect(() => {
+    if (!isNewChatOpen || chatUsers.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+    const ids = chatUsers.map((user) => user.id);
+
+    getPresenceStatus(ids)
+      .then((response) => {
+        if (cancelled) {
+          return;
+        }
+
+        setPresenceByUserId((previous) => {
+          const next = { ...previous };
+          response.data.forEach((item) => {
+            next[item.user_id] = {
+              isOnline: item.is_online,
+              lastSeenAt: item.last_seen_at,
+            };
+          });
+          return next;
+        });
+      })
+      .catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [chatUsers, isNewChatOpen]);
 
   const filteredChatUsers = useMemo(() => {
     const query = chatUserSearch.trim().toLowerCase();
@@ -359,12 +451,28 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
       void refreshThreads({ silent: true });
     };
 
+    const handlePresenceUpdated = (payload: ChatUserPresenceUpdatedEvent) => {
+      const userId = Number(payload.user_id);
+      if (!Number.isFinite(userId) || userId <= 0) {
+        return;
+      }
+
+      setPresenceByUserId((previous) => ({
+        ...previous,
+        [userId]: {
+          isOnline: payload.is_online,
+          lastSeenAt: payload.last_seen_at,
+        },
+      }));
+    };
+
     const handleRequestUpdated = (_payload: ChatConversationRequestUpdatedEvent) => {
       void refreshThreads({ silent: true });
     };
 
     channel.listen(".chat.thread.updated", handleThreadUpdated);
     channel.listen(".chat.conversation.request.updated", handleRequestUpdated);
+    channel.listen(".chat.user.presence.updated", handlePresenceUpdated);
 
     return () => {
       echo.leave(channelName);
@@ -411,6 +519,7 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
     filter,
     setFilter,
     unreadCount,
+    presenceByUserId,
     isLoading,
     errorMessage,
     refreshThreads,

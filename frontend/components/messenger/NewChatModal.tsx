@@ -1,6 +1,7 @@
 "use client";
 
 import Button from "@/components/Button";
+import UserAvatar from "@/components/messenger/UserAvatar";
 import type { DirectoryUser } from "@/lib/chat-api";
 
 interface NewChatModalProps {
@@ -10,6 +11,7 @@ interface NewChatModalProps {
   isLoading: boolean;
   usersError: string | null;
   users: DirectoryUser[];
+  presenceByUserId: Record<number, { isOnline: boolean; lastSeenAt: string | null }>;
   selectedUserIds: Set<number>;
   searchValue: string;
   onClose: () => void;
@@ -25,6 +27,7 @@ export default function NewChatModal({
   isLoading,
   usersError,
   users,
+  presenceByUserId,
   selectedUserIds,
   searchValue,
   onClose,
@@ -77,7 +80,7 @@ export default function NewChatModal({
           ) : (
             users.map((user) => {
               const isSelected = selectedUserIds.has(user.id);
-              const initial = user.name?.trim().charAt(0) || "?";
+              const isOnline = Boolean(presenceByUserId[user.id]?.isOnline);
 
               return (
                 <button
@@ -88,9 +91,7 @@ export default function NewChatModal({
                     isSelected ? "border-blue-200 bg-blue-50" : "border-slate-200 bg-white hover:bg-slate-50"
                   }`}
                 >
-                  <div className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-sky-500 to-blue-600 text-sm font-semibold text-white">
-                    {initial}
-                  </div>
+                  <UserAvatar name={user.name} size={36} isOnline={isOnline} />
                   <div className="flex-1">
                     <p className="text-sm font-medium text-slate-900">{user.name}</p>
                   </div>

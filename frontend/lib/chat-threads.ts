@@ -1,4 +1,4 @@
-import type { ConversationListItem } from "@/types/chat";
+import type { ConversationListItem, ParticipantState } from "@/types/chat";
 
 export interface ThreadItem {
   id: string;
@@ -7,6 +7,9 @@ export interface ThreadItem {
   lastMessage: string;
   lastTime: string;
   unread: number;
+  participantState: ParticipantState;
+  type: string | null;
+  counterpartId: number | null;
 }
 
 export const formatThreadRelativeTime = (rawDate: string | null): string => {
@@ -56,6 +59,8 @@ export const mapConversationToThread = (conversation: ConversationListItem): Thr
     lastMessage,
     lastTime: formatThreadRelativeTime(lastActivity),
     unread: conversation.unread_count,
+    participantState: conversation.participant_state,
+    type: conversation.type,
+    counterpartId: conversation.counterpart?.id ?? null,
   };
 };
-

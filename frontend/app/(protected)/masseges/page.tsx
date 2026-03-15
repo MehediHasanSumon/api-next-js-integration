@@ -4,6 +4,7 @@ import Link from "next/link";
 import ProtectedShell from "@/components/ProtectedShell";
 import MessengerLayout from "@/components/messenger/MessengerLayout";
 import MessengerThreadsSidebar from "@/components/messenger/MessengerThreadsSidebar";
+import UserAvatar from "@/components/messenger/UserAvatar";
 import { useMessengerThreads } from "@/lib/use-messenger-threads";
 
 export default function MassegesPage() {
@@ -15,6 +16,7 @@ export default function MassegesPage() {
     filter,
     setFilter,
     unreadCount,
+    presenceByUserId,
     isLoading,
     errorMessage,
     refreshThreads,
@@ -23,6 +25,8 @@ export default function MassegesPage() {
   } = useMessengerThreads();
 
   const previewThread = filteredThreads[0] ?? threads[0] ?? null;
+  const previewOnline =
+    previewThread?.counterpartId ? Boolean(presenceByUserId[previewThread.counterpartId]?.isOnline) : false;
 
   return (
     <ProtectedShell title="Masseges" description="Team conversations and quick updates" showPageHeader={false}>
@@ -35,6 +39,7 @@ export default function MassegesPage() {
             filter={filter}
             onFilterChange={setFilter}
             unreadCount={unreadCount}
+            presenceByUserId={presenceByUserId}
             isLoading={isLoading}
             errorMessage={errorMessage}
             onRetry={() => void refreshThreads()}
@@ -52,9 +57,7 @@ export default function MassegesPage() {
               <div className="min-h-0 flex-1 overflow-y-auto p-6">
                 <div className="mx-auto max-w-2xl rounded-2xl border border-slate-200 bg-white p-6">
                   <div className="flex items-center gap-3">
-                    <div className="relative flex h-12 w-12 items-center justify-center rounded-full bg-gradient-to-br from-sky-500 to-blue-600 text-base font-semibold text-white">
-                      {previewThread.name.charAt(0)}
-                    </div>
+                  <UserAvatar name={previewThread.name} size={48} isOnline={previewOnline} showStatus={previewThread.type === "direct"} />
                     <div>
                       <p className="text-base font-semibold text-slate-900">{previewThread.name}</p>
                       <p className="text-xs text-slate-500">{previewThread.handle}</p>

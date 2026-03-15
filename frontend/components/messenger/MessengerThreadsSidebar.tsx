@@ -4,6 +4,7 @@ import Link from "next/link";
 import Button from "@/components/Button";
 import MessengerSidebar from "@/components/messenger/MessengerSidebar";
 import NewChatModal from "@/components/messenger/NewChatModal";
+import UserAvatar from "@/components/messenger/UserAvatar";
 import type { ThreadItem } from "@/lib/chat-threads";
 import type { NewChatModalState, ThreadFilter } from "@/lib/use-messenger-threads";
 
@@ -15,6 +16,7 @@ interface MessengerThreadsSidebarProps {
   filter: ThreadFilter;
   onFilterChange: (filter: ThreadFilter) => void;
   unreadCount: number;
+  presenceByUserId: Record<number, { isOnline: boolean; lastSeenAt: string | null }>;
   isLoading: boolean;
   errorMessage: string | null;
   onRetry: () => void;
@@ -31,6 +33,7 @@ export default function MessengerThreadsSidebar({
   filter,
   onFilterChange,
   unreadCount,
+  presenceByUserId,
   isLoading,
   errorMessage,
   onRetry,
@@ -79,11 +82,10 @@ export default function MessengerThreadsSidebar({
             </Button>
             <Button
               type="button"
-              variant="ghost"
+              variant={filter === "online" ? "secondary" : "ghost"}
               size="sm"
               className="h-8 rounded-full text-xs"
-              disabled
-              title="Online filter will use realtime presence later"
+              onClick={() => onFilterChange("online")}
             >
               Online
             </Button>
@@ -122,6 +124,9 @@ export default function MessengerThreadsSidebar({
           <div className="space-y-1">
             {filteredThreads.map((thread) => {
               const isActive = activeThreadId ? String(thread.id) === String(activeThreadId) : false;
+              const counterpartId = thread.counterpartId ?? null;
+              const isOnline = counterpartId ? Boolean(presenceByUserId[counterpartId]?.isOnline) : false;
+              const showStatus = thread.type === "direct";
 
               return (
                 <Link
@@ -131,8 +136,8 @@ export default function MessengerThreadsSidebar({
                     isActive ? "bg-slate-100" : "hover:bg-slate-100/80"
                   }`}
                 >
-                  <div className="relative mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-sky-500 to-blue-600 text-sm font-semibold text-white">
-                    {thread.name.charAt(0)}
+                  <div className="mt-0.5 shrink-0">
+                    <UserAvatar name={thread.name} size={40} isOnline={isOnline} showStatus={showStatus} />
                   </div>
 
                   <div className="min-w-0 flex-1">
@@ -165,6 +170,7 @@ export default function MessengerThreadsSidebar({
         isLoading={newChatModalState.isLoading}
         usersError={newChatModalState.usersError}
         users={newChatModalState.users}
+        presenceByUserId={presenceByUserId}
         selectedUserIds={newChatModalState.selectedUserIds}
         searchValue={newChatModalState.searchValue}
         onClose={newChatModalState.onClose}

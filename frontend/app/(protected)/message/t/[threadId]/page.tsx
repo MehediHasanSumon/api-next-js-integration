@@ -12,6 +12,7 @@ import MessengerThreadsSidebar from "@/components/messenger/MessengerThreadsSide
 import MessengerHeader from "@/components/messenger/MessengerHeader";
 import MessageBubble from "@/components/messenger/MessageBubble";
 import MessengerInfoPanel from "@/components/messenger/MessengerInfoPanel";
+import UserAvatar from "@/components/messenger/UserAvatar";
 import RecordingBar from "@/components/messenger/RecordingBar";
 import MessageAttachments from "@/components/messenger/MessageAttachments";
 import DraftAttachmentsPreview from "@/components/messenger/DraftAttachmentsPreview";
@@ -50,8 +51,6 @@ import type {
   MessageRemovalMode,
   ReactionAggregate,
 } from "@/types/chat";
-
-type ThreadFilter = "all" | "unread" | "online";
 
 type DraftAttachmentStatus = "uploading" | "ready" | "error";
 
@@ -398,6 +397,9 @@ const mapConversationDetailToThread = (
       (conversation.last_message ? `[${conversation.last_message.message_type}]` : "No messages yet"),
     lastTime: formatThreadRelativeTime(conversation.last_message?.created_at ?? conversation.last_message_at),
     unread: participant?.unread_count ?? 0,
+    participantState: participant?.participant_state ?? "accepted",
+    type: conversation.type ?? null,
+    counterpartId: null,
   };
 };
 
@@ -491,6 +493,7 @@ export default function MessageThreadPage() {
     filter,
     setFilter,
     unreadCount,
+    presenceByUserId: presenceByUserIdMap,
     isLoading: threadsLoading,
     errorMessage: threadsError,
     refreshThreads,
@@ -708,6 +711,8 @@ export default function MessageThreadPage() {
     const other = conversation.participants.find((item) => item.user_id !== currentUserId && item.user);
     return other?.user ?? null;
   }, [conversation?.participants, currentUserId]);
+
+  const counterpartOnline = Boolean(counterpart?.id && presenceByUserId[counterpart.id]?.isOnline);
 
   const otherParticipants = useMemo(() => {
     if (!conversation?.participants || currentUserId === null) {
@@ -2536,6 +2541,7 @@ export default function MessageThreadPage() {
             filter={filter}
             onFilterChange={setFilter}
             unreadCount={unreadCount}
+            presenceByUserId={presenceByUserIdMap}
             isLoading={threadsLoading}
             errorMessage={threadsError}
             onRetry={() => void refreshThreads()}
@@ -2549,7 +2555,8 @@ export default function MessageThreadPage() {
               title={activeThread?.name ?? "Conversation"}
               subtitle={presenceSubtitle}
               subtitleClassName={presenceSubtitleClassName}
-              avatarText={activeThread?.name?.charAt(0) ?? "?"}
+              avatarName={activeThread?.name ?? "Conversation"}
+              avatarUrl={conversation?.avatar_path ? resolveAvatarUrl(conversation.avatar_path) : null}
               isOnline={isPresenceOnline}
               actions={
                 <>
@@ -2683,8 +2690,12 @@ export default function MessageThreadPage() {
                       return (
                         <div key={messageIdKey} className={`group relative flex items-end gap-2 ${isMine ? "justify-end" : "justify-start"}`}>
                           {!isMine && (
-                            <div className="mb-6 flex h-8 w-8 items-center justify-center rounded-full bg-slate-200 text-xs font-semibold text-slate-600">
-                              {senderInitial}
+                            <div className="mb-6">
+                              <UserAvatar
+                                name={message.sender?.name ?? counterpart?.name ?? senderInitial}
+                                size={32}
+                                isOnline={Boolean(message.sender?.id && presenceByUserId[message.sender.id]?.isOnline)}
+                              />
                             </div>
                           )}
                           <div className="relative max-w-[78%]">
@@ -2963,8 +2974,12 @@ export default function MessageThreadPage() {
           <MessengerInfoPanel show={showInfoPanel} title="Details">
             <div className="space-y-4">
               <div className="rounded-xl border border-slate-200 bg-white p-4 text-center">
-                <div className="relative mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-br from-sky-500 to-blue-600 text-lg font-semibold text-white">
-                  {(counterpart?.name || activeThread?.name || "?").charAt(0)}
+                <div className="mx-auto">
+                  <UserAvatar
+                    name={counterpart?.name || activeThread?.name || "Conversation"}
+                    size={56}
+                    isOnline={counterpartOnline}
+                  />
                 </div>
                 <p className="mt-3 text-sm font-semibold text-slate-900">{counterpart?.name || activeThread?.name || "Conversation"}</p>
                 <p className="text-xs text-slate-500">{counterpart?.email || activeThread?.handle || "-"}</p>
@@ -3097,13 +3112,13 @@ export default function MessageThreadPage() {
                         className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2"
                       >
                         <div className="flex min-w-0 items-center gap-3">
-                          <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-full bg-gradient-to-br from-sky-500 to-blue-600 text-sm font-semibold text-white">
-                            {avatarUrl ? (
-                              <img src={avatarUrl} alt="" className="h-full w-full object-cover" />
-                            ) : (
-                              initial
-                            )}
-                          </div>
+                          <UserAvatar
+                            name={label}
+                            src={avatarUrl}
+                            size={40}
+                            isOnline={Boolean(target.counterpart?.id && presenceByUserIdMap[target.counterpart.id]?.isOnline)}
+                            showStatus={target.type === "direct"}
+                          />
                           <div className="min-w-0">
                             <p className="truncate text-sm font-medium text-slate-900">{label}</p>
                             {subtitle && <p className="truncate text-xs text-slate-500">{subtitle}</p>}
