@@ -495,15 +495,33 @@ export const updateMessage = async (
 
 export const uploadChatAttachment = async (
   conversationId: ConversationId,
-  file: File
+  file: File,
+  durationMs?: number | null,
+  onProgress?: (progress: number) => void
 ): Promise<UploadAttachmentResponse> => {
   const formData = new FormData();
   formData.append("conversation_id", String(conversationId));
   formData.append("file", file);
+  if (typeof durationMs === "number" && Number.isFinite(durationMs)) {
+    formData.append("duration_ms", String(Math.max(0, Math.round(durationMs))));
+  }
 
   const { data } = await api.post<UploadAttachmentResponse>("/chat/attachments", formData, {
     headers: {
       "Content-Type": "multipart/form-data",
+    },
+    onUploadProgress: (event) => {
+      if (!onProgress) {
+        return;
+      }
+
+      const total = event.total ?? 0;
+      if (total <= 0) {
+        return;
+      }
+
+      const percent = Math.round((event.loaded / total) * 100);
+      onProgress(Math.max(0, Math.min(100, percent)));
     },
   });
 

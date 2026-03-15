@@ -103,24 +103,24 @@ class ChatMessagingService
                 'client_uid' => $forwardClientUid,
             ]);
 
-            if ($sourceMessage->relationLoaded('attachments')) {
-                foreach ($sourceMessage->attachments as $attachment) {
-                    $message->attachments()->create([
-                        'uploader_id' => $actor->id,
-                        'attachment_type' => $attachment->attachment_type,
-                        'storage_disk' => $attachment->storage_disk ?? 'public',
-                        'storage_path' => $attachment->storage_path,
-                        'original_name' => $attachment->original_name,
-                        'mime_type' => $attachment->mime_type,
-                        'extension' => $attachment->extension,
-                        'size_bytes' => $attachment->size_bytes,
-                        'width' => $attachment->width,
-                        'height' => $attachment->height,
-                        'duration_ms' => $attachment->duration_ms,
-                        'checksum_sha256' => $attachment->checksum_sha256,
-                        'metadata' => $attachment->metadata,
-                    ]);
-                }
+            $sourceMessage->loadMissing('attachments');
+
+            foreach ($sourceMessage->attachments as $attachment) {
+                $message->attachments()->create([
+                    'uploader_id' => $actor->id,
+                    'attachment_type' => $attachment->attachment_type,
+                    'storage_disk' => $attachment->storage_disk ?? 'public',
+                    'storage_path' => $attachment->storage_path,
+                    'original_name' => $attachment->original_name,
+                    'mime_type' => $attachment->mime_type,
+                    'extension' => $attachment->extension,
+                    'size_bytes' => $attachment->size_bytes,
+                    'width' => $attachment->width,
+                    'height' => $attachment->height,
+                    'duration_ms' => $attachment->duration_ms,
+                    'checksum_sha256' => $attachment->checksum_sha256,
+                    'metadata' => $attachment->metadata,
+                ]);
             }
 
             $this->syncConversationAfterMessageMutation($targetConversation, $actor, $actorParticipant, $message);

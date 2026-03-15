@@ -16,22 +16,46 @@ class AttachmentController extends Controller
         'image/png',
         'image/webp',
         'image/gif',
+        'audio/mpeg',
+        'audio/wav',
+        'audio/webm',
+        'audio/x-webm',
+        'audio/ogg',
+        'audio/mp4',
+        'video/webm',
         'application/pdf',
         'text/plain',
         'application/zip',
         'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     ];
+    private const ALLOWED_EXTENSIONS = [
+        'jpeg',
+        'jpg',
+        'png',
+        'webp',
+        'gif',
+        'mp3',
+        'wav',
+        'webm',
+        'ogg',
+        'm4a',
+        'pdf',
+        'txt',
+        'zip',
+        'docx',
+        'xlsx',
+    ];
 
     public function store(Request $request, ConversationAccessService $accessService): JsonResponse
     {
         $validated = $request->validate([
             'conversation_id' => 'required|integer|exists:conversations,id',
+            'duration_ms' => 'nullable|integer|min:0|max:3600000',
             'file' => [
                 'required',
                 'file',
                 'max:' . self::MAX_UPLOAD_SIZE_KB,
-                'mimetypes:' . implode(',', self::ALLOWED_MIME_TYPES),
             ],
         ]);
 
@@ -40,15 +64,29 @@ class AttachmentController extends Controller
 
         /** @var \Illuminate\Http\UploadedFile $file */
         $file = $validated['file'];
+        $mimeType = (string) ($file->getMimeType() ?? 'application/octet-stream');
+        $extensionRaw = $file->getClientOriginalExtension();
+        $extension = $extensionRaw !== '' ? strtolower($extensionRaw) : null;
+
+        $isAllowedMime = in_array($mimeType, self::ALLOWED_MIME_TYPES, true);
+        $isAllowedExtension = $extension !== null && in_array($extension, self::ALLOWED_EXTENSIONS, true);
+
+        if (!$isAllowedMime && !$isAllowedExtension) {
+            throw ValidationException::withMessages([
+                'file' => ['The file field must be a file of type: ' . implode(', ', self::ALLOWED_MIME_TYPES) . '.'],
+            ]);
+        }
+
         $storageDisk = 'public';
         $storagePath = $file->store('chat/uploads', $storageDisk);
-        $mimeType = (string) ($file->getMimeType() ?? 'application/octet-stream');
-        $extension = $file->getClientOriginalExtension() ?: null;
         $isImage = str_starts_with($mimeType, 'image/');
+        $isAudio = str_starts_with($mimeType, 'audio/');
+        $attachmentType = $isImage ? 'image' : ($isAudio ? 'voice' : 'file');
         $checksum = null;
 
         $width = null;
         $height = null;
+        $durationMs = array_key_exists('duration_ms', $validated) ? $validated['duration_ms'] : null;
 
         $realPath = $file->getRealPath();
         if (is_string($realPath) && $realPath !== '') {
@@ -66,7 +104,7 @@ class AttachmentController extends Controller
         return response()->json([
             'message' => 'Attachment uploaded successfully.',
             'data' => [
-                'attachment_type' => $isImage ? 'image' : 'file',
+                'attachment_type' => $attachmentType,
                 'storage_disk' => $storageDisk,
                 'storage_path' => $storagePath,
                 'original_name' => $file->getClientOriginalName(),
@@ -75,6 +113,7 @@ class AttachmentController extends Controller
                 'size_bytes' => $file->getSize() ?? 0,
                 'width' => $width,
                 'height' => $height,
+                'duration_ms' => $durationMs,
                 'checksum_sha256' => $checksum,
             ],
         ]);

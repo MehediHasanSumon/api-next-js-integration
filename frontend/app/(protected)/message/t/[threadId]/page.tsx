@@ -12,6 +12,9 @@ import MessengerSidebar from "@/components/messenger/MessengerSidebar";
 import MessengerHeader from "@/components/messenger/MessengerHeader";
 import MessageBubble from "@/components/messenger/MessageBubble";
 import MessengerInfoPanel from "@/components/messenger/MessengerInfoPanel";
+import RecordingBar from "@/components/messenger/RecordingBar";
+import MessageAttachments from "@/components/messenger/MessageAttachments";
+import DraftAttachmentsPreview from "@/components/messenger/DraftAttachmentsPreview";
 import {
   archiveConversation,
   forwardMessage,
@@ -56,6 +59,7 @@ interface DraftAttachmentItem {
   file: File;
   previewUrl: string | null;
   status: DraftAttachmentStatus;
+  progress: number;
   error: string | null;
   payload: AttachmentPayload | null;
 }
@@ -378,6 +382,8 @@ const formatClockTime = (rawDate: string): string => {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 };
 
+const MAX_RECORDING_SECONDS = 120;
+
 const mapConversationDetailToThread = (
   conversation: Conversation,
   participant: ConversationShowResponse["participant"] | null
@@ -482,6 +488,8 @@ export default function MessageThreadPage() {
   const [filter, setFilter] = useState<ThreadFilter>("all");
   const [draft, setDraft] = useState("");
   const [showInfoPanel, setShowInfoPanel] = useState(true);
+  const audioRefMap = useRef<Map<string, HTMLAudioElement>>(new Map());
+  const [playingVoiceId, setPlayingVoiceId] = useState<string | null>(null);
 
   const [conversationData, setConversationData] = useState<ConversationShowResponse | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -511,6 +519,8 @@ export default function MessageThreadPage() {
   const [forwardTargets, setForwardTargets] = useState<ConversationListItem[]>([]);
   const [forwardTargetsLoading, setForwardTargetsLoading] = useState(false);
   const [imageViewer, setImageViewer] = useState<{ url: string; name: string } | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [removeModalMessage, setRemoveModalMessage] = useState<Message | null>(null);
   const [removeModalMode, setRemoveModalMode] = useState<MessageRemovalMode>("for_you");
   const [removeModalLoading, setRemoveModalLoading] = useState(false);
@@ -545,6 +555,11 @@ export default function MessageThreadPage() {
   const composerInputRef = useRef<HTMLInputElement | null>(null);
   const previousDraftRef = useRef<string>("");
   const messageBubbleRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordingStreamRef = useRef<MediaStream | null>(null);
+  const recordingChunksRef = useRef<BlobPart[]>([]);
+  const recordingActionRef = useRef<"send" | "cancel" | null>(null);
+  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     latestMessagesRef.current = messages;
@@ -601,6 +616,21 @@ export default function MessageThreadPage() {
     setAttachmentError(null);
     setIsLoadingOlder(false);
     setHasMoreOlder(true);
+    setIsRecording(false);
+    setRecordingSeconds(0);
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.stop();
+    }
+    recordingActionRef.current = null;
+    recordingChunksRef.current = [];
+    if (recordingStreamRef.current) {
+      recordingStreamRef.current.getTracks().forEach((track) => track.stop());
+      recordingStreamRef.current = null;
+    }
     processedRealtimeEventLookupRef.current.clear();
     processedRealtimeEventKeysRef.current = [];
     hasInitialScrollRef.current = false;
@@ -1632,6 +1662,11 @@ export default function MessageThreadPage() {
   const handleSend = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
+    if (isRecording) {
+      setSendError("Finish recording before sending.");
+      return;
+    }
+
     const body = draft.trim();
     const readyAttachments = draftAttachments
       .filter((item) => item.status === "ready" && item.payload)
@@ -1728,11 +1763,26 @@ export default function MessageThreadPage() {
 
     const clientUid = generateClientUid();
     const optimisticCreatedAt = new Date().toISOString();
-    const optimisticType = !body && hasAttachments
-      ? readyAttachments.every((item) => item.attachment_type === "image")
-        ? "image"
-        : "file"
-      : "text";
+    const resolveAttachmentMessageType = (attachments: AttachmentPayload[]) => {
+      if (attachments.length === 0) {
+        return "text";
+      }
+
+      const allImages = attachments.every((item) => item.attachment_type === "image");
+      if (allImages) {
+        return "image";
+      }
+
+      const allVoice = attachments.every((item) => item.attachment_type === "voice");
+      if (allVoice) {
+        return "voice";
+      }
+
+      return "file";
+    };
+
+    const attachmentMessageType = hasAttachments ? resolveAttachmentMessageType(readyAttachments) : "text";
+    const optimisticType = !body && hasAttachments ? attachmentMessageType : "text";
     const optimisticAttachments = hasAttachments
       ? readyAttachments.map((payload) =>
           mapAttachmentPayloadToAttachment(payload, `temp-${clientUid}`, currentUserId)
@@ -1774,11 +1824,7 @@ export default function MessageThreadPage() {
     );
 
     try {
-      const messageType = !body && hasAttachments
-        ? readyAttachments.every((item) => item.attachment_type === "image")
-          ? "image"
-          : "file"
-        : "text";
+      const messageType = body ? "text" : attachmentMessageType;
       const response = await sendMessage(threadId, {
         message_type: messageType,
         body: body || undefined,
@@ -1792,7 +1838,7 @@ export default function MessageThreadPage() {
         patchThread({
           id: threadId,
           changes: {
-            lastMessage: response.data.body?.trim() || "[text]",
+            lastMessage: response.data.body?.trim() || `[${response.data.message_type ?? "text"}]`,
             lastTime: "now",
           },
         })
@@ -1988,15 +2034,32 @@ export default function MessageThreadPage() {
     setRemoveModalMode("for_you");
   };
 
-  const uploadDraftAttachment = async (conversationId: string, itemId: string, file: File) => {
+  const uploadDraftAttachment = async (
+    conversationId: string,
+    itemId: string,
+    file: File,
+    durationMs?: number | null
+  ) => {
     try {
-      const response = await uploadChatAttachment(conversationId, file);
+      const response = await uploadChatAttachment(conversationId, file, durationMs, (progress) => {
+        setDraftAttachments((previous) =>
+          previous.map((item) =>
+            item.id === itemId
+              ? {
+                  ...item,
+                  progress,
+                }
+              : item
+          )
+        );
+      });
       setDraftAttachments((previous) =>
         previous.map((item) =>
           item.id === itemId
             ? {
                 ...item,
                 status: "ready",
+                progress: 100,
                 payload: response.data,
                 error: null,
               }
@@ -2038,6 +2101,7 @@ export default function MessageThreadPage() {
         file,
         previewUrl,
         status: "uploading" as DraftAttachmentStatus,
+        progress: 0,
         error: null,
         payload: null,
       };
@@ -2155,6 +2219,228 @@ export default function MessageThreadPage() {
     } finally {
       setForwardModalLoading(false);
       setForwardSendingId(null);
+    }
+  };
+
+  const stopRecordingTimer = () => {
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+  };
+
+  const stopAllVoicePlayback = useCallback(() => {
+    audioRefMap.current.forEach((audio) => {
+      audio.pause();
+      audio.currentTime = 0;
+    });
+    setPlayingVoiceId(null);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      stopAllVoicePlayback();
+      audioRefMap.current.clear();
+    };
+  }, [stopAllVoicePlayback]);
+
+  const playVoiceAttachment = useCallback(
+    (attachmentId: string, url: string) => {
+      const existing = audioRefMap.current.get(attachmentId);
+      const audio =
+        existing ??
+        (() => {
+          const created = new Audio(url);
+          created.preload = "metadata";
+          created.addEventListener("ended", () => {
+            setPlayingVoiceId((current) => (current === attachmentId ? null : current));
+          });
+          audioRefMap.current.set(attachmentId, created);
+          return created;
+        })();
+
+      if (audio.src !== url) {
+        audio.src = url;
+      }
+
+      audioRefMap.current.forEach((item, id) => {
+        if (id !== attachmentId) {
+          item.pause();
+          item.currentTime = 0;
+        }
+      });
+
+      audio.currentTime = 0;
+      void audio.play().then(() => setPlayingVoiceId(attachmentId)).catch(() => undefined);
+    },
+    []
+  );
+
+  const cleanupRecordingStream = () => {
+    if (recordingStreamRef.current) {
+      recordingStreamRef.current.getTracks().forEach((track) => track.stop());
+      recordingStreamRef.current = null;
+    }
+  };
+
+  const enqueueRecordedAttachment = (file: File, durationMs?: number | null) => {
+    if (!threadId) {
+      return;
+    }
+
+    setAttachmentError(null);
+    const sanitizedDurationMs =
+      typeof durationMs === "number" && Number.isFinite(durationMs)
+        ? Math.max(0, Math.min(Math.round(durationMs), 3600000))
+        : undefined;
+
+    const id = `att-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const item: DraftAttachmentItem = {
+      id,
+      file,
+      previewUrl: null,
+      status: "uploading",
+      progress: 0,
+      error: null,
+      payload: null,
+    };
+
+    setDraftAttachments((previous) => [...previous, item]);
+    void uploadDraftAttachment(threadId, id, file, sanitizedDurationMs);
+  };
+
+  const getSupportedAudioMimeType = () => {
+    if (typeof window === "undefined" || typeof MediaRecorder === "undefined") {
+      return null;
+    }
+
+    const candidates = [
+      "audio/webm;codecs=opus",
+      "audio/webm",
+      "audio/ogg;codecs=opus",
+      "audio/ogg",
+      "audio/mp4",
+    ];
+
+    return candidates.find((type) => MediaRecorder.isTypeSupported(type)) ?? null;
+  };
+
+  const resolveAudioDurationMs = (file: File): Promise<number | null> => {
+    return new Promise((resolve) => {
+      if (typeof window === "undefined") {
+        resolve(null);
+        return;
+      }
+
+      const audio = document.createElement("audio");
+      const objectUrl = URL.createObjectURL(file);
+      const cleanup = () => {
+        URL.revokeObjectURL(objectUrl);
+        audio.removeAttribute("src");
+        audio.load();
+      };
+
+      audio.preload = "metadata";
+      audio.onloadedmetadata = () => {
+        const duration = audio.duration;
+        cleanup();
+        resolve(Number.isFinite(duration) ? duration * 1000 : null);
+      };
+      audio.onerror = () => {
+        cleanup();
+        resolve(null);
+      };
+
+      audio.src = objectUrl;
+    });
+  };
+
+  const stopRecording = (action: "send" | "cancel") => {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder) {
+      setIsRecording(false);
+      stopRecordingTimer();
+      cleanupRecordingStream();
+      recordingChunksRef.current = [];
+      recordingActionRef.current = null;
+      return;
+    }
+
+    recordingActionRef.current = action;
+
+    if (recorder.state !== "inactive") {
+      recorder.stop();
+    }
+  };
+
+  const startRecording = async () => {
+    if (isRecording || !canSendMessage || isLoading || editingLoading) {
+      return;
+    }
+
+    setMessageActionError(null);
+    setRecordingSeconds(0);
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = getSupportedAudioMimeType();
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+
+      recordingStreamRef.current = stream;
+      mediaRecorderRef.current = recorder;
+      recordingChunksRef.current = [];
+      recordingActionRef.current = null;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          recordingChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onstop = () => {
+        const action = recordingActionRef.current;
+        const chunks = recordingChunksRef.current;
+        const finalMimeType = recorder.mimeType || mimeType || "audio/webm";
+
+        stopRecordingTimer();
+        setIsRecording(false);
+        cleanupRecordingStream();
+        mediaRecorderRef.current = null;
+        recordingActionRef.current = null;
+        recordingChunksRef.current = [];
+
+        if (action !== "send" || chunks.length === 0) {
+          return;
+        }
+
+        const blob = new Blob(chunks, { type: finalMimeType });
+        const extension = finalMimeType.includes("ogg") ? "ogg" : finalMimeType.includes("mp4") ? "m4a" : "webm";
+        const file = new File([blob], `voice-${Date.now()}.${extension}`, { type: finalMimeType });
+        void (async () => {
+          const durationMs = await resolveAudioDurationMs(file);
+          enqueueRecordedAttachment(file, durationMs);
+        })();
+      };
+
+      recorder.start();
+      setIsRecording(true);
+      stopRecordingTimer();
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingSeconds((previous) => {
+          const next = previous + 1;
+
+          if (next >= MAX_RECORDING_SECONDS) {
+            stopRecordingTimer();
+            stopRecording("send");
+            return MAX_RECORDING_SECONDS;
+          }
+
+          return next;
+        });
+      }, 1000);
+    } catch {
+      setMessageActionError("Unable to access the microphone.");
+      cleanupRecordingStream();
     }
   };
 
@@ -2419,6 +2705,16 @@ export default function MessageThreadPage() {
                           ? "Sent attachment"
                           : `[${message.message_type}]`);
                       const isSystemMessage = isRemovedForEveryone || message.message_type === "system";
+                      const attachmentsForTextCheck = message.attachments ?? [];
+                      const shouldHideMessageText =
+                        !message.body?.trim() &&
+                        attachmentsForTextCheck.length > 0 &&
+                        attachmentsForTextCheck.every((attachment) => {
+                          const type = attachment.attachment_type as string;
+                          const isAudioType = type === "voice" || type === "audio";
+                          const isAudioMime = (attachment.mime_type ?? "").startsWith("audio/");
+                          return isAudioType || isAudioMime;
+                        });
                       const senderInitial =
                         message.sender?.name?.trim().charAt(0) ||
                         message.sender?.email?.trim().charAt(0) ||
@@ -2499,113 +2795,21 @@ export default function MessageThreadPage() {
                                 </p>
                               )}
 
-                              <p className={`text-sm leading-relaxed ${isRemovedForEveryone ? "italic opacity-85" : ""}`}>{messageText}</p>
+                              {!shouldHideMessageText && (
+                                <p className={`text-sm leading-relaxed ${isRemovedForEveryone ? "italic opacity-85" : ""}`}>{messageText}</p>
+                              )}
 
-                              {message.attachments && message.attachments.length > 0 && (() => {
-                                const imageAttachments = message.attachments
-                                  .map((attachment) => ({
-                                    attachment,
-                                    url: resolveAttachmentUrl(attachment),
-                                  }))
-                                  .filter((item) => item.attachment.attachment_type === "image" && item.url);
-                                const fileAttachments = message.attachments.filter(
-                                  (attachment) => attachment.attachment_type !== "image" || !resolveAttachmentUrl(attachment)
-                                );
-
-                                return (
-                                  <div className="mt-2 space-y-2">
-                                    {imageAttachments.length > 0 && (
-                                      <div className={`${imageAttachments.length > 1 ? "grid grid-cols-2 gap-2" : ""}`}>
-                                        {imageAttachments.map(({ attachment, url }) => {
-                                          const attachmentName =
-                                            attachment.original_name || attachment.storage_path.split("/").pop() || "Image";
-
-                                          return (
-                                            <button
-                                              key={String(attachment.id)}
-                                              type="button"
-                                              onClick={() => openImageViewer(url as string, attachmentName)}
-                                              className={`overflow-hidden rounded-2xl border ${isMine ? "border-blue-200/40" : "border-slate-200"} ${
-                                                imageAttachments.length > 1 ? "h-36" : "h-60"
-                                              } w-full bg-slate-100/30`}
-                                              aria-label={`Open image ${attachmentName}`}
-                                            >
-                                              <img src={url as string} alt={attachmentName} className="h-full w-full object-cover" />
-                                            </button>
-                                          );
-                                        })}
-                                      </div>
-                                    )}
-
-                                    {fileAttachments.map((attachment) => {
-                                      const attachmentName =
-                                        attachment.original_name || attachment.storage_path.split("/").pop() || "Attachment";
-                                      const attachmentUrl = resolveAttachmentUrl(attachment);
-                                      const isImageAttachment = attachment.attachment_type === "image";
-
-                                      return (
-                                        <div
-                                          key={String(attachment.id)}
-                                          className={`flex items-center justify-between gap-3 rounded-xl px-3 py-2 ${
-                                            isMine ? "bg-white/20" : "bg-slate-100"
-                                          }`}
-                                        >
-                                          <div className="flex min-w-0 items-center gap-2">
-                                            <span
-                                              className={`inline-flex h-8 w-8 items-center justify-center rounded-lg ${
-                                                isMine ? "bg-white/30 text-white" : "bg-white text-slate-600"
-                                              }`}
-                                            >
-                                              {isImageAttachment ? (
-                                                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                                                  <path
-                                                    strokeLinecap="round"
-                                                    strokeLinejoin="round"
-                                                    strokeWidth="2"
-                                                    d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-8h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
-                                                  />
-                                                </svg>
-                                              ) : (
-                                                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                                                  <path
-                                                    strokeLinecap="round"
-                                                    strokeLinejoin="round"
-                                                    strokeWidth="2"
-                                                    d="M14.752 11.168l-6.518 6.518a4 4 0 105.657 5.657l7.07-7.071a6 6 0 10-8.485-8.485l-7.07 7.071a8 8 0 1011.314 11.314l6.518-6.518"
-                                                  />
-                                                </svg>
-                                              )}
-                                            </span>
-                                            <div className="min-w-0">
-                                              <p className={`truncate text-xs font-medium ${isMine ? "text-white" : "text-slate-700"}`}>
-                                                {attachmentName}
-                                              </p>
-                                              <p className={`text-[11px] ${isMine ? "text-blue-100" : "text-slate-500"}`}>
-                                                {formatFileSize(attachment.size_bytes)}
-                                              </p>
-                                            </div>
-                                          </div>
-                                          {attachmentUrl && (
-                                            <a
-                                              href={attachmentUrl}
-                                              target="_blank"
-                                              rel="noreferrer"
-                                              download
-                                              className={`rounded-full px-3 py-1 text-[11px] font-semibold ${
-                                                isMine
-                                                  ? "bg-white/80 text-slate-700 hover:bg-white"
-                                                  : "bg-white text-slate-700 hover:bg-slate-50"
-                                              }`}
-                                            >
-                                              Download
-                                            </a>
-                                          )}
-                                        </div>
-                                      );
-                                    })}
-                                  </div>
-                                );
-                              })()}
+                              {message.attachments && message.attachments.length > 0 && (
+                                <MessageAttachments
+                                  attachments={message.attachments}
+                                  isMine={isMine}
+                                  playingVoiceId={playingVoiceId}
+                                  resolveAttachmentUrl={resolveAttachmentUrl}
+                                  onOpenImage={openImageViewer}
+                                  onPlayVoice={playVoiceAttachment}
+                                  formatFileSize={formatFileSize}
+                                />
+                              )}
 
                               <p className={`mt-1 text-[11px] ${isMine ? "text-blue-100/80" : "text-slate-500"}`}>
                                 {isOptimistic ? "Sending..." : `${formatClockTime(message.created_at)}${editedLabel}`}
@@ -2699,53 +2903,20 @@ export default function MessageThreadPage() {
                 </div>
               )}
 
-              {draftAttachments.length > 0 && (
-                <div className="mb-3 flex flex-wrap gap-2">
-                  {draftAttachments.map((item) => {
-                    const isImage = item.previewUrl !== null;
-
-                    return (
-                      <div key={item.id} className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white/90 px-2 py-1 text-xs text-slate-700 shadow-sm">
-                        {isImage ? (
-                          <button
-                            type="button"
-                            onClick={() => openImageViewer(item.previewUrl ?? "", item.file.name)}
-                            className="rounded-md"
-                            aria-label={`Open image ${item.file.name}`}
-                          >
-                            <img src={item.previewUrl ?? ""} alt={item.file.name} className="h-10 w-10 rounded-md object-cover" />
-                          </button>
-                        ) : (
-                          <div className="flex h-10 w-10 items-center justify-center rounded-md bg-slate-100 text-slate-500">
-                            <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14.752 11.168l-6.518 6.518a4 4 0 105.657 5.657l7.07-7.071a6 6 0 10-8.485-8.485l-7.07 7.071a8 8 0 1011.314 11.314l6.518-6.518" />
-                            </svg>
-                          </div>
-                        )}
-                        <div className="min-w-0">
-                          <p className="max-w-[120px] truncate font-medium text-slate-700">{item.file.name}</p>
-                          <p className="text-[11px] text-slate-500">
-                            {formatFileSize(item.file.size)}
-                            {item.status === "uploading" && " · uploading"}
-                            {item.status === "error" && " · failed"}
-                          </p>
-                          {item.error && <p className="text-[11px] text-rose-600">{item.error}</p>}
-                        </div>
-                        <button
-                          type="button"
-                          className="ml-auto text-slate-400 hover:text-slate-700"
-                          onClick={() => removeDraftAttachment(item.id)}
-                          aria-label="Remove attachment"
-                        >
-                          <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
-                          </svg>
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
+              {isRecording && (
+                <RecordingBar
+                  recordingSeconds={recordingSeconds}
+                  onCancel={() => stopRecording("cancel")}
+                  onSend={() => stopRecording("send")}
+                />
               )}
+
+              <DraftAttachmentsPreview
+                items={draftAttachments}
+                onRemove={removeDraftAttachment}
+                onOpenImage={openImageViewer}
+                formatFileSize={formatFileSize}
+              />
 
               <div className="flex items-center gap-2">
                 <input
@@ -2763,11 +2934,36 @@ export default function MessageThreadPage() {
                   variant="ghost"
                   className="rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200"
                   onClick={() => attachmentInputRef.current?.click()}
-                  disabled={!canSendMessage || isLoading || hasAttachmentUploadsInProgress || Boolean(editingMessageId) || editingLoading}
+                  disabled={
+                    !canSendMessage ||
+                    isLoading ||
+                    isRecording ||
+                    hasAttachmentUploadsInProgress ||
+                    Boolean(editingMessageId) ||
+                    editingLoading
+                  }
                   aria-label="Attach file"
                 >
                   <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14.752 11.168l-6.518 6.518a4 4 0 105.657 5.657l7.07-7.071a6 6 0 10-8.485-8.485l-7.07 7.071a8 8 0 1011.314 11.314l6.518-6.518" />
+                  </svg>
+                </Button>
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className={`rounded-full ${isRecording ? "bg-rose-100 text-rose-600" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}
+                  onClick={startRecording}
+                  disabled={!canSendMessage || isLoading || isRecording || Boolean(editingMessageId) || editingLoading}
+                  aria-label="Record voice message"
+                >
+                  <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth="2"
+                      d="M12 1a3 3 0 013 3v8a3 3 0 11-6 0V4a3 3 0 013-3zm-5 11a5 5 0 0010 0m-5 5v4m-3 0h6"
+                    />
                   </svg>
                 </Button>
                 <input
@@ -2784,7 +2980,7 @@ export default function MessageThreadPage() {
                   }}
                   placeholder="Type a message..."
                   className="h-10 flex-1 rounded-full border border-slate-200 bg-slate-100 px-4 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[color:var(--messenger-blue)]/30"
-                  disabled={!canSendMessage || isLoading || editingLoading}
+                  disabled={!canSendMessage || isLoading || editingLoading || isRecording}
                 />
                 <Button
                   type="submit"
@@ -2795,6 +2991,7 @@ export default function MessageThreadPage() {
                     isLoading ||
                     isSending ||
                     editingLoading ||
+                    isRecording ||
                     (draft.trim() === "" && draftAttachments.length === 0)
                   }
                 >
