@@ -548,6 +548,7 @@ export default function MessageThreadPage() {
   const hasInitialScrollRef = useRef(false);
   const isNearBottomRef = useRef(true);
   const lastThreadIdRef = useRef<string>("");
+  const lastAutoScrollThreadIdRef = useRef<string>("");
   const markReadInFlightRef = useRef(false);
   const lastMarkedMessageIdRef = useRef<number | null>(null);
   const latestMessagesRef = useRef<Message[]>([]);
@@ -656,6 +657,7 @@ export default function MessageThreadPage() {
     lastThreadIdRef.current = threadId;
     hasInitialScrollRef.current = false;
     isNearBottomRef.current = true;
+    lastAutoScrollThreadIdRef.current = "";
   }, [threadId]);
 
   useEffect(() => {
@@ -1156,6 +1158,23 @@ export default function MessageThreadPage() {
     scrollToBottom(behavior);
     hasInitialScrollRef.current = true;
   }, [messages, scrollToBottom]);
+
+  useLayoutEffect(() => {
+    if (!threadId || isLoading || messages.length === 0) {
+      return;
+    }
+
+    if (lastAutoScrollThreadIdRef.current === threadId) {
+      return;
+    }
+
+    lastAutoScrollThreadIdRef.current = threadId;
+    requestAnimationFrame(() => {
+      scrollToBottom("auto");
+      hasInitialScrollRef.current = true;
+      isNearBottomRef.current = true;
+    });
+  }, [isLoading, messages.length, scrollToBottom, threadId]);
 
   useEffect(() => {
     if (isLoading || messages.length === 0) {
