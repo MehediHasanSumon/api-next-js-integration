@@ -4,7 +4,7 @@ import Link from "next/link";
 import { ChangeEvent, FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import type { AxiosError } from "axios";
-import { Forward, PencilLine, Search, SmilePlus, Trash2, X } from "lucide-react";
+import { CornerUpLeft, Forward, PencilLine, Search, SmilePlus, Trash2, X } from "lucide-react";
 import ProtectedShell from "@/components/ProtectedShell";
 import Button from "@/components/Button";
 import MessengerLayout from "@/components/messenger/MessengerLayout";
@@ -153,6 +153,38 @@ const clampNumber = (value: number, min: number, max: number): number => {
 
 const getMessagePreviewText = (message: Message): string => {
   return message.body?.trim() || `[${message.message_type}]`;
+};
+
+const getReplyPreviewText = (reply: Message["reply_to"]): string => {
+  if (!reply) {
+    return "";
+  }
+
+  return reply.body?.trim() || `[${reply.message_type}]`;
+};
+
+const getReadMessageId = (
+  participantLastReadMessageId: Message["id"] | null | undefined,
+  readEvent: ChatReadEvent | null,
+  participantUserId: number | null | undefined
+): number | null => {
+  const participantReadId = participantLastReadMessageId === null || participantLastReadMessageId === undefined
+    ? null
+    : toNumericId(participantLastReadMessageId);
+  const realtimeReadId =
+    readEvent && participantUserId !== null && participantUserId !== undefined && readEvent.user_id === participantUserId
+      ? toNumericId(readEvent.last_read_message_id)
+      : null;
+
+  if (participantReadId === null) {
+    return realtimeReadId;
+  }
+
+  if (realtimeReadId === null) {
+    return participantReadId;
+  }
+
+  return Math.max(participantReadId, realtimeReadId);
 };
 
 const hasRemovedForEveryoneFlag = (message: Message): boolean => {
@@ -630,6 +662,7 @@ export default function MessageThreadPage() {
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingLoading, setEditingLoading] = useState(false);
   const [editingError, setEditingError] = useState<string | null>(null);
+  const [replyingToMessage, setReplyingToMessage] = useState<Message | null>(null);
   const [draftAttachments, setDraftAttachments] = useState<DraftAttachmentItem[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [isLoadingOlder, setIsLoadingOlder] = useState(false);
@@ -718,6 +751,7 @@ export default function MessageThreadPage() {
     setEditingMessageId(null);
     setEditingError(null);
     setEditingLoading(false);
+    setReplyingToMessage(null);
     previousDraftRef.current = "";
     draftAttachments.forEach((item) => {
       if (item.previewUrl) {
@@ -809,6 +843,19 @@ export default function MessageThreadPage() {
     const other = conversation.participants.find((item) => item.user_id !== currentUserId && item.user);
     return other?.user ?? null;
   }, [conversation?.participants, currentUserId]);
+
+  const counterpartParticipant = useMemo(() => {
+    if (!conversation?.participants || currentUserId === null) {
+      return null;
+    }
+
+    return conversation.participants.find((item) => item.user_id !== currentUserId) ?? null;
+  }, [conversation?.participants, currentUserId]);
+
+  const counterpartReadMessageId = useMemo(
+    () => getReadMessageId(counterpartParticipant?.last_read_message_id, lastReadEvent, counterpartParticipant?.user_id),
+    [counterpartParticipant?.last_read_message_id, counterpartParticipant?.user_id, lastReadEvent]
+  );
 
   const counterpartOnline = Boolean(counterpart?.id && presenceByUserId[counterpart.id]?.isOnline);
 
@@ -907,6 +954,23 @@ export default function MessageThreadPage() {
 
     return collected.slice(0, 6);
   }, [messages]);
+
+  const latestOwnMessageId = useMemo(() => {
+    if (currentUserId === null) {
+      return null;
+    }
+
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const candidate = messages[index];
+      if (Number(candidate.sender_id) !== Number(currentUserId)) {
+        continue;
+      }
+
+      return String(candidate.id);
+    }
+
+    return null;
+  }, [currentUserId, messages]);
 
   const typingUserNames = useMemo(() => {
     if (!conversation?.participants || typingUserIds.length === 0) {
@@ -1639,6 +1703,27 @@ export default function MessageThreadPage() {
       }
 
       setLastReadEvent(payload);
+      setConversationData((previous) => {
+        if (!previous?.conversation.participants) {
+          return previous;
+        }
+
+        return {
+          ...previous,
+          conversation: {
+            ...previous.conversation,
+            participants: previous.conversation.participants.map((item) =>
+              Number(item.user_id) === Number(payload.user_id)
+                ? {
+                    ...item,
+                    last_read_message_id: payload.last_read_message_id,
+                    last_read_at: payload.read_at,
+                  }
+                : item
+            ),
+          },
+        };
+      });
     });
 
     channel.listen(".chat.conversation.request.updated", (payload: ChatRequestUpdatedEvent) => {
@@ -2054,6 +2139,19 @@ export default function MessageThreadPage() {
           mapAttachmentPayloadToAttachment(payload, `temp-${clientUid}`, currentUserId)
         )
       : [];
+    const replyTo = replyingToMessage
+      ? {
+          id: replyingToMessage.id,
+          conversation_id: replyingToMessage.conversation_id,
+          sender_id: replyingToMessage.sender_id,
+          message_type: replyingToMessage.message_type,
+          body: replyingToMessage.body,
+          created_at: replyingToMessage.created_at,
+          sender: replyingToMessage.sender,
+          reactions_total: replyingToMessage.reactions_total,
+          reaction_aggregates: replyingToMessage.reaction_aggregates,
+        }
+      : null;
     const optimisticMessage: Message = {
       id: `temp-${clientUid}`,
       conversation_id: threadId,
@@ -2061,7 +2159,7 @@ export default function MessageThreadPage() {
       message_type: optimisticType,
       body: body || null,
       metadata: { optimistic: true },
-      reply_to_message_id: null,
+      reply_to_message_id: replyingToMessage?.id ?? null,
       client_uid: clientUid,
       edited_at: null,
       deleted_at: null,
@@ -2075,6 +2173,7 @@ export default function MessageThreadPage() {
           }
         : undefined,
       attachments: optimisticAttachments,
+      reply_to: replyTo,
     };
 
     setMessages((previous) => upsertMessageByIdentity(previous, optimisticMessage));
@@ -2095,6 +2194,7 @@ export default function MessageThreadPage() {
         message_type: messageType,
         body: body || undefined,
         attachments: hasAttachments ? readyAttachments : undefined,
+        reply_to_message_id: replyingToMessage?.id ?? undefined,
         client_uid: clientUid,
       });
 
@@ -2122,6 +2222,7 @@ export default function MessageThreadPage() {
       });
       setDraftAttachments([]);
       setAttachmentError(null);
+      setReplyingToMessage(null);
     } catch (error) {
       setMessages((previous) => previous.filter((message) => message.client_uid !== clientUid));
       setDraft(body);
@@ -2587,6 +2688,20 @@ export default function MessageThreadPage() {
     setRemoveModalError(null);
   };
 
+  const startReplyingToMessage = (message: Message) => {
+    setEditingMessageId(null);
+    setEditingError(null);
+    setReplyingToMessage(message);
+
+    requestAnimationFrame(() => {
+      composerInputRef.current?.focus();
+    });
+  };
+
+  const cancelReplyingToMessage = () => {
+    setReplyingToMessage(null);
+  };
+
   const startEditingMessage = (message: Message) => {
     const body = message.body?.trim() ?? "";
 
@@ -2595,6 +2710,7 @@ export default function MessageThreadPage() {
     }
 
     setMessageActionError(null);
+    setReplyingToMessage(null);
     setEditingMessageId(String(message.id));
     setEditingError(null);
     previousDraftRef.current = draft;
@@ -3308,6 +3424,7 @@ export default function MessageThreadPage() {
                       const canUseMessageActions = participant?.participant_state === "accepted" && participant.archived_at === null && !isOptimistic;
                       const canReactMessage = canUseMessageActions && !isRemovedForEveryone;
                       const canForwardMessage = canUseMessageActions && !isRemovedForEveryone;
+                      const canReplyMessage = canUseMessageActions && !isRemovedForEveryone;
                       const canRemoveForYou = !isOptimistic;
                       const canRemoveEverywhere = canRemoveEverywhereByPolicy(message);
                       const canEditMessage =
@@ -3319,8 +3436,23 @@ export default function MessageThreadPage() {
                         (!message.attachments || message.attachments.length === 0) &&
                         !isEditing;
                       const hasAnyAction =
-                        canForwardMessage || canReactMessage || canRemoveForYou || canRemoveEverywhere || canEditMessage;
+                        canReplyMessage || canForwardMessage || canReactMessage || canRemoveForYou || canRemoveEverywhere || canEditMessage;
                       const editedLabel = !isOptimistic && message.edited_at ? " \u00b7 edited" : "";
+                      const replyPreviewText = getReplyPreviewText(message.reply_to);
+                      const shouldShowReadStatus =
+                        !isOptimistic &&
+                        !isGroupConversation &&
+                        isMine &&
+                        latestOwnMessageId === messageIdKey &&
+                        counterpartParticipant?.participant_state === "accepted";
+                      const messageNumericId = toNumericId(message.id);
+                      const deliveryStatus = shouldShowReadStatus
+                        ? counterpartReadMessageId !== null &&
+                          messageNumericId !== null &&
+                          counterpartReadMessageId >= messageNumericId
+                          ? "Seen"
+                          : "Delivered"
+                        : null;
                       const messageText =
                         message.body?.trim() ||
                         (message.attachments && message.attachments.length > 0
@@ -3360,6 +3492,16 @@ export default function MessageThreadPage() {
                                 className={`absolute top-1 z-20 ${isMine ? "left-0 -translate-x-full pr-2" : "right-0 translate-x-full pl-2"}`}
                               >
                                 <div className="flex items-center gap-1 rounded-full border border-slate-200 bg-white/90 px-1 py-1 shadow-sm opacity-100 transition md:opacity-0 md:group-hover:opacity-100">
+                                  {canReplyMessage && (
+                                    <button
+                                      type="button"
+                                      className="inline-flex h-7 w-7 items-center justify-center rounded-full text-slate-600 hover:bg-slate-100"
+                                      onClick={() => startReplyingToMessage(message)}
+                                      aria-label="Reply to message"
+                                    >
+                                      <CornerUpLeft className="h-4 w-4" />
+                                    </button>
+                                  )}
                                   {canForwardMessage && (
                                     <button
                                       type="button"
@@ -3411,6 +3553,20 @@ export default function MessageThreadPage() {
                               className="relative inline-block"
                             >
                               <MessageBubble isMine={isMine} isSystem={isSystemMessage} className={isSystemMessage ? "italic" : ""}>
+                              {message.reply_to && (
+                                <div
+                                  className={`mb-2 rounded-2xl border px-3 py-2 text-xs ${
+                                    isMine
+                                      ? "border-blue-300/70 bg-blue-500/20 text-blue-50"
+                                      : "border-slate-200 bg-slate-100/90 text-slate-600"
+                                  }`}
+                                >
+                                  <p className={`font-semibold ${isMine ? "text-white" : "text-slate-700"}`}>
+                                    {message.reply_to.sender?.name?.trim() || "Reply"}
+                                  </p>
+                                  <p className="mt-0.5 line-clamp-2">{replyPreviewText}</p>
+                                </div>
+                              )}
                               {(message.forwarded_from_message_id || message.forwarded_snapshot) && (
                                 <p
                                   className={`mb-1 text-[11px] font-semibold uppercase tracking-wide ${
@@ -3438,7 +3594,9 @@ export default function MessageThreadPage() {
                               )}
 
                               <p className={`mt-1 text-[11px] ${isMine ? "text-blue-100/80" : "text-slate-500"}`}>
-                                {isOptimistic ? "Sending..." : `${formatClockTime(message.created_at)}${editedLabel}`}
+                                {isOptimistic
+                                  ? "Sending..."
+                                  : `${formatClockTime(message.created_at)}${editedLabel}${deliveryStatus ? ` \u00b7 ${deliveryStatus}` : ""}`}
                               </p>
                               </MessageBubble>
                             </div>
@@ -3526,6 +3684,24 @@ export default function MessageThreadPage() {
                 <div className="mb-2 flex items-center justify-between rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
                   <span>Editing message</span>
                   <button type="button" className="text-blue-600 hover:text-blue-800" onClick={cancelEditingMessage}>
+                    Cancel
+                  </button>
+                </div>
+              )}
+
+              {replyingToMessage && (
+                <div className="mb-2 flex items-start justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                  <div className="min-w-0">
+                    <p className="font-semibold text-slate-700">
+                      Replying to {replyingToMessage.sender?.name?.trim() || "message"}
+                    </p>
+                    <p className="mt-0.5 line-clamp-2">{getMessagePreviewText(replyingToMessage)}</p>
+                  </div>
+                  <button
+                    type="button"
+                    className="shrink-0 text-slate-500 hover:text-slate-700"
+                    onClick={cancelReplyingToMessage}
+                  >
                     Cancel
                   </button>
                 </div>

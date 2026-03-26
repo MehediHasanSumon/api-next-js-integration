@@ -65,7 +65,7 @@ class ChatMessagingService
 
             $this->syncConversationAfterMessageMutation($conversation, $sender, $senderParticipant, $message);
 
-            return $message->fresh(['sender:id,name,email', 'attachments']);
+            return $this->freshMessagePayload($message, (int) $sender->id);
         });
 
         broadcast(new MessageSent($conversation->id, $message->toArray()))->toOthers();
@@ -430,7 +430,7 @@ class ChatMessagingService
                 'edited_at' => now(),
             ])->save();
 
-            return $message->fresh(['sender:id,name,email', 'attachments']);
+            return $this->freshMessagePayload($message, (int) $actor->id);
         });
 
         $editedAtIso = $updated->edited_at?->toISOString() ?? now()->toISOString();
@@ -465,6 +465,21 @@ class ChatMessagingService
         $actorParticipant->update([
             'last_read_message_id' => $message->id,
             'last_read_at' => now(),
+        ]);
+    }
+
+    private function freshMessagePayload(Message $message, int $viewerUserId): Message
+    {
+        return $message->fresh([
+            'sender:id,name,email',
+            'attachments',
+            'replyTo' => function ($replyQuery) use ($viewerUserId): void {
+                $replyQuery
+                    ->select(['id', 'conversation_id', 'sender_id', 'message_type', 'body', 'created_at', 'deleted_at'])
+                    ->visibleToUser($viewerUserId)
+                    ->withActiveReactionAggregates($viewerUserId)
+                    ->with('sender:id,name,email');
+            },
         ]);
     }
 
