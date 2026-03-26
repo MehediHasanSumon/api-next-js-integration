@@ -375,6 +375,7 @@ const normalizeConversationListItem = (value: unknown): ConversationListItem | n
     last_message_at: toNullableString(value.last_message_at) ?? lastMessage?.created_at ?? null,
     participant_state: (toNullableString(value.participant_state) as ParticipantState) ?? "accepted",
     archived_at: toNullableString(value.archived_at),
+    is_blocked: Boolean(value.is_blocked),
     unread_count: toNumber(value.unread_count),
     counterpart: normalizeChatUser(value.counterpart) ?? null,
     last_message: lastMessage,
@@ -423,6 +424,10 @@ const normalizeConversationShowResponse = (value: ConversationShowResponse): Con
       unread_count: toNumber(value.participant?.unread_count),
       last_read_message_id: value.participant?.last_read_message_id ?? null,
       last_read_at: toNullableString(value.participant?.last_read_at),
+    },
+    moderation: {
+      blocked_by_me: Boolean(value.moderation?.blocked_by_me),
+      blocked_by_other: Boolean(value.moderation?.blocked_by_other),
     },
   };
 };
@@ -664,6 +669,20 @@ export const unmuteConversation = async (
   conversationId: ConversationId
 ): Promise<ConversationMuteResponse> => {
   const { data } = await api.delete<ConversationMuteResponse>(`${conversationPath(conversationId)}/mute`);
+  return data;
+};
+
+export const blockConversation = async (
+  conversationId: ConversationId
+): Promise<ConversationActionResponse> => {
+  const { data } = await api.post<ConversationActionResponse>(`${conversationPath(conversationId)}/block`);
+  return data;
+};
+
+export const unblockConversation = async (
+  conversationId: ConversationId
+): Promise<ConversationActionResponse> => {
+  const { data } = await api.delete<ConversationActionResponse>(`${conversationPath(conversationId)}/block`);
   return data;
 };
 

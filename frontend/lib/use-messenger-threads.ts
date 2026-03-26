@@ -14,7 +14,7 @@ import {
 import { mapConversationToThread, type ThreadItem } from "@/lib/chat-threads";
 import { getPresenceStatus } from "@/lib/presence-api";
 
-export type ThreadFilter = "inbox" | "unread" | "online" | "requests" | "archived" | "all";
+export type ThreadFilter = "inbox" | "unread" | "online" | "requests" | "archived" | "blocked" | "all";
 
 export interface NewChatModalState {
   isOpen: boolean;
@@ -110,6 +110,7 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
   const [groupName, setGroupName] = useState("");
   const [selectedUserIds, setSelectedUserIds] = useState<number[]>([]);
   const [conversationDirectory, setConversationDirectory] = useState<ConversationListItem[]>([]);
+  const [blockedConversationDirectory, setBlockedConversationDirectory] = useState<ConversationListItem[]>([]);
   const [presenceByUserId, setPresenceByUserId] = useState<Record<number, { isOnline: boolean; lastSeenAt: string | null }>>({});
 
   const threadsRef = useRef<ThreadItem[]>([]);
@@ -124,12 +125,13 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
   const refreshThreads = useCallback(async (options?: { silent?: boolean }) => {
     await dispatch(fetchInboxThreads(options));
 
-    try {
-      const response = await listConversations({ filter: "all", per_page: 100 });
-      setConversationDirectory(response.data);
-    } catch {
-      setConversationDirectory([]);
-    }
+    const [allResult, blockedResult] = await Promise.allSettled([
+      listConversations({ filter: "all", per_page: 100 }),
+      listConversations({ filter: "blocked", per_page: 100 }),
+    ]);
+
+    setConversationDirectory(allResult.status === "fulfilled" ? allResult.value.data : []);
+    setBlockedConversationDirectory(blockedResult.status === "fulfilled" ? blockedResult.value.data : []);
   }, [dispatch]);
 
   useEffect(() => {
@@ -141,20 +143,34 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
     void refreshThreads({ silent: threads.length > 0 });
   }, [refreshThreads, threads.length]);
 
+  useEffect(() => {
+    if (filter !== "blocked") {
+      return;
+    }
+
+    void refreshThreads({ silent: true });
+  }, [filter, refreshThreads]);
+
   const unreadCount = useMemo(() => threads.reduce((sum, thread) => sum + thread.unread, 0), [threads]);
   const directoryThreads = useMemo(
     () => conversationDirectory.map(mapConversationToThread),
     [conversationDirectory]
   );
+  const blockedThreads = useMemo(
+    () => blockedConversationDirectory.map(mapConversationToThread),
+    [blockedConversationDirectory]
+  );
 
   const filteredThreads = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
-    const sourceThreads =
-      filter === "requests" || filter === "archived" || filter === "all"
-        ? directoryThreads
-        : threads;
+    const selectedSourceThreads =
+      filter === "blocked"
+        ? blockedThreads
+        : filter === "requests" || filter === "archived" || filter === "all"
+          ? directoryThreads
+          : threads;
 
-    return sourceThreads.filter((thread) => {
+    return selectedSourceThreads.filter((thread) => {
       const matchQuery =
         query === "" ||
         thread.name.toLowerCase().includes(query) ||
@@ -186,7 +202,11 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
       }
 
       if (filter === "archived") {
-        return thread.archivedAt !== null;
+        return thread.archivedAt !== null && !thread.isBlocked;
+      }
+
+      if (filter === "blocked") {
+        return thread.isBlocked;
       }
 
       if (filter === "all") {
@@ -195,7 +215,7 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
 
       return true;
     });
-  }, [directoryThreads, filter, presenceByUserId, searchQuery, threads]);
+  }, [blockedThreads, directoryThreads, filter, presenceByUserId, searchQuery, threads]);
 
   const acceptedDirectCounterpartIds = useMemo(() => {
     const ids = threads

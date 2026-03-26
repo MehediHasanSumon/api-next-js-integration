@@ -25,6 +25,8 @@ import {
   listConversations,
   listMessages,
   markConversationRead,
+  blockConversation,
+  unblockConversation,
   removeMessageForEverywhere,
   removeMessageForYou,
   removeConversationParticipant,
@@ -488,6 +490,7 @@ const mapConversationDetailToThread = (
     unread: participant?.unread_count ?? 0,
     participantState: participant?.participant_state ?? "accepted",
     archivedAt: participant?.archived_at ?? null,
+    isBlocked: false,
     type: conversation.type ?? null,
     counterpartId: null,
   };
@@ -637,6 +640,8 @@ export default function MessageThreadPage() {
   const [memberRoleUpdatingId, setMemberRoleUpdatingId] = useState<number | null>(null);
   const [leaveGroupLoading, setLeaveGroupLoading] = useState(false);
   const [leaveGroupError, setLeaveGroupError] = useState<string | null>(null);
+  const [blockActionLoading, setBlockActionLoading] = useState(false);
+  const [blockActionError, setBlockActionError] = useState<string | null>(null);
   const [reactionModalMessage, setReactionModalMessage] = useState<Message | null>(null);
   const [reactionPopoverPosition, setReactionPopoverPosition] = useState<{ top: number; left: number } | null>(null);
   const [reactionMutationLoadingKey, setReactionMutationLoadingKey] = useState<string | null>(null);
@@ -730,6 +735,8 @@ export default function MessageThreadPage() {
     setMessageActionError(null);
     setLeaveGroupLoading(false);
     setLeaveGroupError(null);
+    setBlockActionLoading(false);
+    setBlockActionError(null);
     setGroupDescriptionEditing(false);
     setGroupDescriptionSaving(false);
     setGroupDescriptionError(null);
@@ -826,8 +833,12 @@ export default function MessageThreadPage() {
 
   const conversation = conversationData?.conversation ?? null;
   const participant = conversationData?.participant ?? null;
+  const moderation = conversationData?.moderation ?? null;
   const isGroupConversation = conversation?.type === "group";
-  const canEmitTyping = participant?.participant_state === "accepted" && participant.archived_at === null;
+  const isBlockedByMe = Boolean(moderation?.blocked_by_me);
+  const isBlockedByOther = Boolean(moderation?.blocked_by_other);
+  const isBlockedConversation = isBlockedByMe || isBlockedByOther;
+  const canEmitTyping = participant?.participant_state === "accepted" && participant.archived_at === null && !isBlockedConversation;
   const hasAttachmentUploadsInProgress = draftAttachments.some((item) => item.status === "uploading");
 
   useEffect(() => {
@@ -1048,6 +1059,14 @@ export default function MessageThreadPage() {
   }, [conversation?.avatar_path, conversation?.id, conversation?.title, detailsDisplayName, dispatch]);
 
   const presenceSubtitle = useMemo(() => {
+    if (isBlockedByOther) {
+      return "You can't send messages yet";
+    }
+
+    if (isBlockedByMe) {
+      return "Blocked";
+    }
+
     if (typingIndicatorText) {
       return typingIndicatorText;
     }
@@ -1099,7 +1118,7 @@ export default function MessageThreadPage() {
     }
 
     return counterpart?.email ? `@${counterpart.email.split("@")[0]}` : activeThread?.handle ?? "-";
-  }, [activeThread?.handle, counterpart?.email, otherParticipants, presenceByUserId, serverClockOffsetMs, typingIndicatorText]);
+  }, [activeThread?.handle, counterpart?.email, isBlockedByMe, isBlockedByOther, otherParticipants, presenceByUserId, serverClockOffsetMs, typingIndicatorText]);
 
   const presenceSubtitleClassName =
     typingIndicatorText || presenceSubtitle.toLowerCase().includes("online") ? "text-emerald-600" : "text-slate-500";
@@ -2689,6 +2708,55 @@ export default function MessageThreadPage() {
     }
   };
 
+  const handleBlockConversation = async () => {
+    if (!threadId || isGroupConversation) {
+      return;
+    }
+
+    if (typeof window !== "undefined") {
+      const confirmed = window.confirm(`Block ${detailsDisplayName}? You won't see this conversation in your inbox anymore.`);
+      if (!confirmed) {
+        return;
+      }
+    }
+
+    setBlockActionLoading(true);
+    setBlockActionError(null);
+
+    try {
+      await blockConversation(threadId);
+      await refreshThreads();
+      await refreshConversation();
+    } catch (error) {
+      const axiosError = error as AxiosError<ApiValidationErrorPayload>;
+      const firstError = Object.values(axiosError.response?.data?.errors ?? {})[0]?.[0];
+      setBlockActionError(firstError || axiosError.response?.data?.message || "Failed to block this user.");
+    } finally {
+      setBlockActionLoading(false);
+    }
+  };
+
+  const handleUnblockConversation = async () => {
+    if (!threadId || isGroupConversation) {
+      return;
+    }
+
+    setBlockActionLoading(true);
+    setBlockActionError(null);
+
+    try {
+      await unblockConversation(threadId);
+      await refreshThreads();
+      await refreshConversation();
+    } catch (error) {
+      const axiosError = error as AxiosError<ApiValidationErrorPayload>;
+      const firstError = Object.values(axiosError.response?.data?.errors ?? {})[0]?.[0];
+      setBlockActionError(firstError || axiosError.response?.data?.message || "Failed to unblock this user.");
+    } finally {
+      setBlockActionLoading(false);
+    }
+  };
+
   const openForwardModal = (message: Message) => {
     setMessageActionError(null);
     setForwardModalMessage(message);
@@ -3322,7 +3390,7 @@ export default function MessageThreadPage() {
   const isDeclinedThread = participant?.participant_state === "declined";
   const isArchivedThread = participant?.archived_at !== null;
   const isMutedThread = isFutureIsoDate(participant?.muted_until);
-  const canSendMessage = participant?.participant_state === "accepted";
+  const canSendMessage = participant?.participant_state === "accepted" && !isBlockedConversation;
   const removeModalCanEverywhere = removeModalMessage ? canRemoveEverywhereByPolicy(removeModalMessage) : false;
 
   return (
@@ -3693,132 +3761,174 @@ export default function MessageThreadPage() {
                 </div>
               )}
               {isDeclinedThread && <p className="mb-2 text-xs text-slate-500">This conversation request was declined.</p>}
-              {!canSendMessage && !isPendingThread && !isDeclinedThread && (
+              {!canSendMessage && !isPendingThread && !isDeclinedThread && !isBlockedConversation && (
                 <p className="mb-2 text-xs text-slate-500">You can send messages after the request is accepted.</p>
               )}
-
-              {editingMessageId && (
-                <div className="mb-2 flex items-center justify-between rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
-                  <span>Editing message</span>
-                  <button type="button" className="text-blue-600 hover:text-blue-800" onClick={cancelEditingMessage}>
-                    Cancel
-                  </button>
+              {isBlockedByOther && (
+                <div className="mb-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-center">
+                  <p className="text-sm font-semibold text-slate-800">You can&apos;t send messages yet</p>
+                  <p className="mt-1 text-xs text-slate-500">This person has blocked messages in this chat.</p>
                 </div>
               )}
-
-              {replyingToMessage && (
-                <div className="mb-2 flex items-start justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-                  <div className="min-w-0">
-                    <p className="font-semibold text-slate-700">
-                      Replying to {replyingToMessage.sender?.name?.trim() || "message"}
-                    </p>
-                    <p className="mt-0.5 line-clamp-2">{getMessagePreviewText(replyingToMessage)}</p>
+              {isBlockedByMe && (
+                <div className="mb-3 rounded-3xl border border-slate-200 bg-slate-50 px-4 py-4 text-center">
+                  <p className="text-sm font-semibold text-slate-800">
+                    You blocked messages and calls from {detailsDisplayName}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    You can&apos;t message or call them in this chat, and you won&apos;t receive their messages or calls.
+                  </p>
+                  <div className="mt-4 space-y-2">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      fullWidth
+                      className="rounded-2xl"
+                      onClick={() => void handleUnblockConversation()}
+                      disabled={blockActionLoading}
+                    >
+                      {blockActionLoading ? "Unblocking..." : "Unblock"}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      fullWidth
+                      className="rounded-2xl"
+                      onClick={() => setBlockActionError("Please review the conversation settings or contact support if this looks wrong.")}
+                      disabled={blockActionLoading}
+                    >
+                      Something&apos;s wrong
+                    </Button>
                   </div>
-                  <button
-                    type="button"
-                    className="shrink-0 text-slate-500 hover:text-slate-700"
-                    onClick={cancelReplyingToMessage}
-                  >
-                    Cancel
-                  </button>
                 </div>
               )}
 
-              {isRecording && (
-                <RecordingBar
-                  recordingSeconds={recordingSeconds}
-                  onCancel={() => stopRecording("cancel")}
-                  onSend={() => stopRecording("send")}
-                />
-              )}
+              {!isBlockedConversation && (
+                <>
+                  {editingMessageId && (
+                    <div className="mb-2 flex items-center justify-between rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
+                      <span>Editing message</span>
+                      <button type="button" className="text-blue-600 hover:text-blue-800" onClick={cancelEditingMessage}>
+                        Cancel
+                      </button>
+                    </div>
+                  )}
 
-              <DraftAttachmentsPreview
-                items={draftAttachments}
-                onRemove={removeDraftAttachment}
-                onOpenImage={openImageViewer}
-                formatFileSize={formatFileSize}
-              />
+                  {replyingToMessage && (
+                    <div className="mb-2 flex items-start justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                      <div className="min-w-0">
+                        <p className="font-semibold text-slate-700">
+                          Replying to {replyingToMessage.sender?.name?.trim() || "message"}
+                        </p>
+                        <p className="mt-0.5 line-clamp-2">{getMessagePreviewText(replyingToMessage)}</p>
+                      </div>
+                      <button
+                        type="button"
+                        className="shrink-0 text-slate-500 hover:text-slate-700"
+                        onClick={cancelReplyingToMessage}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  )}
 
-              <div className="flex items-center gap-2">
-                <input
-                  ref={attachmentInputRef}
-                  type="file"
-                  className="hidden"
-                  multiple
-                  accept="image/*,.pdf,.txt,.zip,.docx,.xlsx"
-                  onChange={handleAttachmentSelect}
-                  disabled={!canSendMessage || isLoading}
-                />
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="ghost"
-                  className="rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200"
-                  onClick={() => attachmentInputRef.current?.click()}
-                  disabled={
-                    !canSendMessage ||
-                    isLoading ||
-                    isRecording ||
-                    hasAttachmentUploadsInProgress ||
-                    Boolean(editingMessageId) ||
-                    editingLoading
-                  }
-                  aria-label="Attach file"
-                >
-                  <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14.752 11.168l-6.518 6.518a4 4 0 105.657 5.657l7.07-7.071a6 6 0 10-8.485-8.485l-7.07 7.071a8 8 0 1011.314 11.314l6.518-6.518" />
-                  </svg>
-                </Button>
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="ghost"
-                  className={`rounded-full ${isRecording ? "bg-rose-100 text-rose-600" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}
-                  onClick={startRecording}
-                  disabled={!canSendMessage || isLoading || isRecording || Boolean(editingMessageId) || editingLoading}
-                  aria-label="Record voice message"
-                >
-                  <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth="2"
-                      d="M12 1a3 3 0 013 3v8a3 3 0 11-6 0V4a3 3 0 013-3zm-5 11a5 5 0 0010 0m-5 5v4m-3 0h6"
+                  {isRecording && (
+                    <RecordingBar
+                      recordingSeconds={recordingSeconds}
+                      onCancel={() => stopRecording("cancel")}
+                      onSend={() => stopRecording("send")}
                     />
-                  </svg>
-                </Button>
-                <input
-                  ref={composerInputRef}
-                  type="text"
-                  value={draft}
-                  onChange={handleDraftChange}
-                  onBlur={() => {
-                    if (stopTypingTimerRef.current) {
-                      clearTimeout(stopTypingTimerRef.current);
-                      stopTypingTimerRef.current = null;
-                    }
-                    void sendTypingStatus(false);
-                  }}
-                  placeholder="Type a message..."
-                  className="h-10 flex-1 rounded-full border border-slate-200 bg-slate-100 px-4 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[color:var(--messenger-blue)]/30"
-                  disabled={!canSendMessage || isLoading || editingLoading || isRecording}
-                />
-                <Button
-                  type="submit"
-                  size="md"
-                  className="rounded-full px-4 shadow-sm"
-                  disabled={
-                    !canSendMessage ||
-                    isLoading ||
-                    isSending ||
-                    editingLoading ||
-                    isRecording ||
-                    (draft.trim() === "" && draftAttachments.length === 0)
-                  }
-                >
-                  {editingLoading ? "Saving..." : isSending ? "Sending..." : editingMessageId ? "Save" : "Send"}
-                </Button>
-              </div>
+                  )}
+
+                  <DraftAttachmentsPreview
+                    items={draftAttachments}
+                    onRemove={removeDraftAttachment}
+                    onOpenImage={openImageViewer}
+                    formatFileSize={formatFileSize}
+                  />
+
+                  <div className="flex items-center gap-2">
+                    <input
+                      ref={attachmentInputRef}
+                      type="file"
+                      className="hidden"
+                      multiple
+                      accept="image/*,.pdf,.txt,.zip,.docx,.xlsx"
+                      onChange={handleAttachmentSelect}
+                      disabled={!canSendMessage || isLoading}
+                    />
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      className="rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200"
+                      onClick={() => attachmentInputRef.current?.click()}
+                      disabled={
+                        !canSendMessage ||
+                        isLoading ||
+                        isRecording ||
+                        hasAttachmentUploadsInProgress ||
+                        Boolean(editingMessageId) ||
+                        editingLoading
+                      }
+                      aria-label="Attach file"
+                    >
+                      <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14.752 11.168l-6.518 6.518a4 4 0 105.657 5.657l7.07-7.071a6 6 0 10-8.485-8.485l-7.07 7.071a8 8 0 1011.314 11.314l6.518-6.518" />
+                      </svg>
+                    </Button>
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      className={`rounded-full ${isRecording ? "bg-rose-100 text-rose-600" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}
+                      onClick={startRecording}
+                      disabled={!canSendMessage || isLoading || isRecording || Boolean(editingMessageId) || editingLoading}
+                      aria-label="Record voice message"
+                    >
+                      <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth="2"
+                          d="M12 1a3 3 0 013 3v8a3 3 0 11-6 0V4a3 3 0 013-3zm-5 11a5 5 0 0010 0m-5 5v4m-3 0h6"
+                        />
+                      </svg>
+                    </Button>
+                    <input
+                      ref={composerInputRef}
+                      type="text"
+                      value={draft}
+                      onChange={handleDraftChange}
+                      onBlur={() => {
+                        if (stopTypingTimerRef.current) {
+                          clearTimeout(stopTypingTimerRef.current);
+                          stopTypingTimerRef.current = null;
+                        }
+                        void sendTypingStatus(false);
+                      }}
+                      placeholder="Type a message..."
+                      className="h-10 flex-1 rounded-full border border-slate-200 bg-slate-100 px-4 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[color:var(--messenger-blue)]/30"
+                      disabled={!canSendMessage || isLoading || editingLoading || isRecording}
+                    />
+                    <Button
+                      type="submit"
+                      size="md"
+                      className="rounded-full px-4 shadow-sm"
+                      disabled={
+                        !canSendMessage ||
+                        isLoading ||
+                        isSending ||
+                        editingLoading ||
+                        isRecording ||
+                        (draft.trim() === "" && draftAttachments.length === 0)
+                      }
+                    >
+                      {editingLoading ? "Saving..." : isSending ? "Sending..." : editingMessageId ? "Save" : "Send"}
+                    </Button>
+                  </div>
+                </>
+              )}
             </form>
           </section>
 
@@ -4106,9 +4216,20 @@ export default function MessageThreadPage() {
                   </Button>
                 ) : null}
                 {leaveGroupError ? <p className="px-3 pt-1 text-[11px] text-rose-600">{leaveGroupError}</p> : null}
-                <Button type="button" variant="ghost" size="sm" fullWidth className="justify-start border-0 text-xs font-medium text-rose-600 shadow-none hover:bg-rose-50">
-                  Block / Report
-                </Button>
+                {!isGroupConversation ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    fullWidth
+                    className="justify-start border-0 text-xs font-medium text-rose-600 shadow-none hover:bg-rose-50"
+                    onClick={() => void (isBlockedByMe ? handleUnblockConversation() : handleBlockConversation())}
+                    disabled={blockActionLoading}
+                  >
+                    {blockActionLoading ? (isBlockedByMe ? "Unblocking..." : "Blocking...") : isBlockedByMe ? "Unblock user" : "Block user"}
+                  </Button>
+                ) : null}
+                {blockActionError ? <p className="px-3 pt-1 text-[11px] text-rose-600">{blockActionError}</p> : null}
               </div>
             </div>
           </MessengerInfoPanel>

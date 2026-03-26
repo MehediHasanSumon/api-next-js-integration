@@ -5,6 +5,7 @@ use App\Events\Chat\MessageReactionUpdated;
 use App\Events\Chat\MessageRemovedEverywhere;
 use App\Events\Chat\MessageRemovedForUser;
 use App\Models\Conversation;
+use App\Models\UserBlock;
 use App\Models\User;
 use Illuminate\Broadcasting\PrivateChannel;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -1021,6 +1022,132 @@ test('admin can remove message for everyone beyond owner time window', function 
         ->assertJsonPath('data.message.body', 'This message was removed.');
 });
 
+test('participant can block a direct conversation counterpart', function () {
+    $owner = User::factory()->create();
+    $peer = User::factory()->create();
+    $conversation = createDirectConversation($owner, $peer);
+
+    actingAs($owner)
+        ->postJson("/api/chat/conversations/{$conversation->id}/block")
+        ->assertOk()
+        ->assertJsonPath('conversation_id', $conversation->id);
+
+    expect(
+        UserBlock::query()
+            ->where('blocker_user_id', $owner->id)
+            ->where('blocked_user_id', $peer->id)
+            ->exists()
+    )->toBeTrue();
+
+    $participant = $conversation->participants()->where('user_id', $owner->id)->firstOrFail();
+    expect($participant->hidden_at)->toBeNull();
+    expect($participant->archived_at)->not->toBeNull();
+});
+
+test('blocked direct conversation cannot be used to send messages', function () {
+    $owner = User::factory()->create();
+    $peer = User::factory()->create();
+    $conversation = createDirectConversation($owner, $peer);
+
+    UserBlock::query()->create([
+        'blocker_user_id' => $owner->id,
+        'blocked_user_id' => $peer->id,
+        'conversation_id' => $conversation->id,
+    ]);
+
+    actingAs($owner)
+        ->postJson("/api/chat/conversations/{$conversation->id}/messages", [
+            'message_type' => 'text',
+            'body' => 'should fail',
+        ])
+        ->assertForbidden()
+        ->assertJsonPath('message', 'You have blocked this user. Unblock them before using this conversation.');
+});
+
+test('blocked conversations are excluded from inbox and available in blocked filter', function () {
+    $owner = User::factory()->create();
+    $peer = User::factory()->create();
+    $conversation = createDirectConversation($owner, $peer);
+
+    UserBlock::query()->create([
+        'blocker_user_id' => $owner->id,
+        'blocked_user_id' => $peer->id,
+        'conversation_id' => $conversation->id,
+    ]);
+
+    $conversation->participants()
+        ->where('user_id', $owner->id)
+        ->update(['archived_at' => now()]);
+
+    actingAs($owner)
+        ->getJson('/api/chat/conversations?filter=inbox')
+        ->assertOk()
+        ->assertJsonMissing(['conversation_id' => $conversation->id]);
+
+    actingAs($owner)
+        ->getJson('/api/chat/conversations?filter=blocked')
+        ->assertOk()
+        ->assertJsonPath('data.0.conversation_id', $conversation->id)
+        ->assertJsonPath('data.0.is_blocked', true);
+});
+
+test('legacy hidden blocked conversations are still visible in blocked filter and can be opened', function () {
+    $owner = User::factory()->create();
+    $peer = User::factory()->create();
+    $conversation = createDirectConversation($owner, $peer);
+
+    UserBlock::query()->create([
+        'blocker_user_id' => $owner->id,
+        'blocked_user_id' => $peer->id,
+        'conversation_id' => $conversation->id,
+    ]);
+
+    $conversation->participants()
+        ->where('user_id', $owner->id)
+        ->update([
+            'archived_at' => now(),
+            'hidden_at' => now(),
+        ]);
+
+    actingAs($owner)
+        ->getJson('/api/chat/conversations?filter=blocked')
+        ->assertOk()
+        ->assertJsonPath('data.0.conversation_id', $conversation->id);
+
+    actingAs($owner)
+        ->getJson("/api/chat/conversations/{$conversation->id}")
+        ->assertOk()
+        ->assertJsonPath('conversation.id', $conversation->id);
+});
+
+test('participant can unblock a direct conversation counterpart', function () {
+    $owner = User::factory()->create();
+    $peer = User::factory()->create();
+    $conversation = createDirectConversation($owner, $peer);
+
+    UserBlock::query()->create([
+        'blocker_user_id' => $owner->id,
+        'blocked_user_id' => $peer->id,
+        'conversation_id' => $conversation->id,
+    ]);
+
+    $conversation->participants()
+        ->where('user_id', $owner->id)
+        ->update(['archived_at' => now()]);
+
+    actingAs($owner)
+        ->deleteJson("/api/chat/conversations/{$conversation->id}/block")
+        ->assertOk()
+        ->assertJsonPath('conversation_id', $conversation->id);
+
+    expect(
+        UserBlock::query()
+            ->where('blocker_user_id', $owner->id)
+            ->where('blocked_user_id', $peer->id)
+            ->exists()
+    )->toBeFalse();
+});
+
 test('group owner can re-add a previously removed participant', function () {
     $owner = User::factory()->create();
     $member = User::factory()->create();
@@ -1253,4 +1380,3 @@ test('non-owner cannot transfer group ownership', function () {
         ])
         ->assertStatus(422);
 });
-

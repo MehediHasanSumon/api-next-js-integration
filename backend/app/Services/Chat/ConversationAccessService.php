@@ -9,11 +9,16 @@ use Illuminate\Auth\Access\AuthorizationException;
 
 class ConversationAccessService
 {
+    public function __construct(
+        private readonly ConversationModerationService $moderationService
+    ) {
+    }
+
     public function requireVisibleParticipant(Conversation $conversation, User $user): ConversationParticipant
     {
         $participant = $this->participantOrFail($conversation, $user);
 
-        if ($participant->hidden_at !== null) {
+        if ($participant->hidden_at !== null && !$this->moderationService->isConversationBlockedByActor($conversation, $user)) {
             throw new AuthorizationException('Conversation is hidden or not accessible.');
         }
 
@@ -23,6 +28,7 @@ class ConversationAccessService
     public function requireAcceptedParticipant(Conversation $conversation, User $user): ConversationParticipant
     {
         $participant = $this->requireVisibleParticipant($conversation, $user);
+        $this->moderationService->ensureConversationNotBlocked($conversation, $user);
 
         if ($participant->archived_at !== null) {
             throw new AuthorizationException('Conversation is archived. Unarchive it before this action.');

@@ -10,8 +10,10 @@ use App\Http\Requests\Chat\StartConversationRequest;
 use App\Models\Conversation;
 use App\Models\ConversationParticipant;
 use App\Models\Message;
+use App\Models\UserBlock;
 use App\Models\User;
 use App\Services\Chat\ConversationAccessService;
+use App\Services\Chat\ConversationModerationService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
@@ -26,6 +28,7 @@ class ConversationController extends Controller
     {
         $validated = $request->validated();
         $authUser = $request->user();
+        $moderationService = app(ConversationModerationService::class);
 
         $participantIds = collect($validated['participant_ids'] ?? [])
             ->map(fn ($id) => (int) $id)
@@ -106,6 +109,7 @@ class ConversationController extends Controller
             });
         } else {
             $recipient = $recipient ?? User::query()->findOrFail($participantIds[0] ?? null);
+            $moderationService->ensureUsersCanStartDirectConversation($authUser, $recipient);
 
             $lowId = min((int) $authUser->id, (int) $recipient->id);
             $highId = max((int) $authUser->id, (int) $recipient->id);
@@ -180,7 +184,7 @@ class ConversationController extends Controller
     public function index(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'filter' => 'nullable|in:inbox,requests,archived,all',
+            'filter' => 'nullable|in:inbox,requests,archived,blocked,all',
             'per_page' => 'nullable|integer|min:5|max:100',
         ]);
 
@@ -196,6 +200,17 @@ class ConversationController extends Controller
                 'conversation.participants.user:id,name,email,last_seen_at',
             ]);
 
+        $blockedConversationSubquery = UserBlock::query()
+            ->selectRaw('1')
+            ->whereColumn('user_blocks.conversation_id', 'conversation_participants.conversation_id')
+            ->where('user_blocks.blocker_user_id', (int) $user->id);
+
+        if ($filter === 'blocked') {
+            $query->whereExists($blockedConversationSubquery);
+        } else {
+            $query->whereNotExists($blockedConversationSubquery);
+        }
+
         if ($filter === 'inbox') {
             $query->whereIn('participant_state', ['accepted', 'pending'])
                 ->whereNull('archived_at')
@@ -206,6 +221,8 @@ class ConversationController extends Controller
         } elseif ($filter === 'archived') {
             $query->whereNotNull('archived_at')
                 ->whereNull('hidden_at');
+        } elseif ($filter === 'blocked') {
+            $query->whereIn('participant_state', ['accepted', 'pending', 'declined']);
         } else {
             $query->whereNull('hidden_at');
         }
@@ -229,9 +246,16 @@ class ConversationController extends Controller
             ->all();
 
         $lastVisibleMessages = $this->resolveLastVisibleMessages($conversationIds, $viewerId);
+        $blockedConversationIds = UserBlock::query()
+            ->where('blocker_user_id', $viewerId)
+            ->whereIn('conversation_id', $conversationIds)
+            ->pluck('conversation_id')
+            ->map(fn ($id) => (int) $id)
+            ->all();
+        $blockedLookup = array_fill_keys($blockedConversationIds, true);
 
         $paginator->setCollection(
-            $paginator->getCollection()->map(function (ConversationParticipant $participant) use ($viewerId, $lastVisibleMessages) {
+            $paginator->getCollection()->map(function (ConversationParticipant $participant) use ($viewerId, $lastVisibleMessages, $blockedLookup) {
                 $conversation = $participant->conversation;
                 $lastMessage = $lastVisibleMessages->get((int) $participant->conversation_id);
                 $counterpart = $conversation?->participants
@@ -247,6 +271,7 @@ class ConversationController extends Controller
                     'last_message_at' => $lastMessage?->created_at,
                     'participant_state' => $participant->participant_state,
                     'archived_at' => $participant->archived_at,
+                    'is_blocked' => isset($blockedLookup[(int) $participant->conversation_id]),
                     'unread_count' => $participant->unread_count,
                     'counterpart' => $counterpart ? [
                         'id' => $counterpart->id,
@@ -261,7 +286,12 @@ class ConversationController extends Controller
         return response()->json($paginator);
     }
 
-    public function show(Request $request, Conversation $conversation, ConversationAccessService $accessService): JsonResponse
+    public function show(
+        Request $request,
+        Conversation $conversation,
+        ConversationAccessService $accessService,
+        ConversationModerationService $moderationService
+    ): JsonResponse
     {
         $participant = $accessService->requireVisibleParticipant($conversation, $request->user());
         $viewerUserId = (int) $request->user()->id;
@@ -292,6 +322,7 @@ class ConversationController extends Controller
                 'last_read_message_id' => $participant->last_read_message_id,
                 'last_read_at' => $participant->last_read_at,
             ],
+            'moderation' => $moderationService->getConversationModerationState($conversation, $request->user()),
         ]);
     }
 
@@ -760,6 +791,36 @@ class ConversationController extends Controller
             'message' => 'Conversation unmuted successfully.',
             'conversation_id' => $conversation->id,
             'muted_until' => null,
+        ]);
+    }
+
+    public function block(
+        Request $request,
+        Conversation $conversation,
+        ConversationAccessService $accessService,
+        ConversationModerationService $moderationService
+    ): JsonResponse {
+        $accessService->requireVisibleParticipant($conversation, $request->user());
+        $moderationService->blockConversation($conversation, $request->user());
+
+        return response()->json([
+            'message' => 'User blocked successfully.',
+            'conversation_id' => $conversation->id,
+        ]);
+    }
+
+    public function unblock(
+        Request $request,
+        Conversation $conversation,
+        ConversationAccessService $accessService,
+        ConversationModerationService $moderationService
+    ): JsonResponse {
+        $accessService->requireVisibleParticipant($conversation, $request->user());
+        $moderationService->unblockConversation($conversation, $request->user());
+
+        return response()->json([
+            'message' => 'User unblocked successfully.',
+            'conversation_id' => $conversation->id,
         ]);
     }
 

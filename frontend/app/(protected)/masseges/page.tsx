@@ -24,7 +24,9 @@ export default function MassegesPage() {
     newChatModalState,
   } = useMessengerThreads();
 
-  const previewThread = filteredThreads[0] ?? threads[0] ?? null;
+  const previewThread =
+    filteredThreads[0] ??
+    (filter === "inbox" || filter === "unread" || filter === "online" ? threads[0] ?? null : null);
   const previewOnline =
     previewThread?.counterpartId ? Boolean(presenceByUserId[previewThread.counterpartId]?.isOnline) : false;
 

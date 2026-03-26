@@ -74,7 +74,7 @@ export default function MessengerThreadsSidebar({
     };
   }, []);
 
-  const selectMoreFilter = (nextFilter: Extract<ThreadFilter, "requests" | "archived" | "all">) => {
+  const selectMoreFilter = (nextFilter: Extract<ThreadFilter, "requests" | "archived" | "blocked" | "all">) => {
     onFilterChange(nextFilter);
     setMoreFiltersOpen(false);
   };
@@ -130,7 +130,7 @@ export default function MessengerThreadsSidebar({
             <div ref={moreFiltersRef} className="relative">
               <Button
                 type="button"
-                variant={filter === "requests" || filter === "archived" || filter === "all" ? "secondary" : "ghost"}
+                variant={filter === "requests" || filter === "archived" || filter === "blocked" || filter === "all" ? "secondary" : "ghost"}
                 size="sm"
                 className="h-8 min-w-8 rounded-full px-2 text-xs"
                 onClick={() => setMoreFiltersOpen((previous) => !previous)}
@@ -158,6 +158,15 @@ export default function MessengerThreadsSidebar({
                     onClick={() => selectMoreFilter("archived")}
                   >
                     Archived
+                  </button>
+                  <button
+                    type="button"
+                    className={`flex w-full rounded-xl px-3 py-2 text-left text-xs font-medium ${
+                      filter === "blocked" ? "bg-slate-100 text-slate-900" : "text-slate-600 hover:bg-slate-50"
+                    }`}
+                    onClick={() => selectMoreFilter("blocked")}
+                  >
+                    Blocked
                   </button>
                   <button
                     type="button"

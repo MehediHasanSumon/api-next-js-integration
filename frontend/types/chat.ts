@@ -7,7 +7,7 @@ export type AttachmentType = "image" | "file" | "voice";
 export type MessageRemovalMode = "for_you" | "everywhere";
 export type MessageReactionAction = "added" | "removed";
 
-export type ConversationFilter = "inbox" | "requests" | "archived" | "all";
+export type ConversationFilter = "inbox" | "requests" | "archived" | "blocked" | "all";
 export type RequestAction = "accept" | "decline";
 
 export interface PaginatedLink {
@@ -189,6 +189,7 @@ export interface ConversationListItem {
   last_message_at: string | null;
   participant_state: ParticipantState;
   archived_at: string | null;
+  is_blocked?: boolean;
   unread_count: number;
   counterpart: ChatUser | null;
   last_message: Message | null;
@@ -203,6 +204,10 @@ export interface ConversationShowResponse {
     unread_count: number;
     last_read_message_id: MessageId | null;
     last_read_at: string | null;
+  };
+  moderation?: {
+    blocked_by_me: boolean;
+    blocked_by_other: boolean;
   };
 }
 
