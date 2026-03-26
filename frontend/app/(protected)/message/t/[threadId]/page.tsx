@@ -936,7 +936,7 @@ export default function MessageThreadPage() {
       }));
   }, [conversation?.participants, currentUserId]);
 
-  const mediaPhotos = useMemo(() => {
+  const allMediaPhotos = useMemo(() => {
     const collected: { url: string; name: string }[] = [];
 
     for (let i = messages.length - 1; i >= 0; i -= 1) {
@@ -958,14 +958,14 @@ export default function MessageThreadPage() {
         const name = attachment.original_name ?? "Image";
         collected.push({ url, name });
       });
-
-      if (collected.length >= 6) {
-        break;
-      }
     }
 
-    return collected.slice(0, 6);
+    return collected;
   }, [messages]);
+
+  const mediaPhotos = useMemo(() => {
+    return allMediaPhotos.slice(0, 6);
+  }, [allMediaPhotos]);
 
   const latestOwnMessageId = useMemo(() => {
     if (currentUserId === null) {
@@ -4159,7 +4159,18 @@ export default function MessageThreadPage() {
               <div className="rounded-xl border border-slate-200 bg-white p-4">
                 <div className="flex items-center justify-between">
                   <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Media Photos</p>
-                  <button type="button" className="text-[11px] font-semibold text-slate-500 hover:text-slate-700">
+                  <button
+                    type="button"
+                    className="text-[11px] font-semibold text-slate-500 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={() => {
+                      if (allMediaPhotos.length === 0) {
+                        return;
+                      }
+
+                      openImageGallery(allMediaPhotos, 0);
+                    }}
+                    disabled={allMediaPhotos.length === 0}
+                  >
                     See all
                   </button>
                 </div>
