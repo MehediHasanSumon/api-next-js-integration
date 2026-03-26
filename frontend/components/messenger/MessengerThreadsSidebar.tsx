@@ -9,6 +9,22 @@ import UserAvatar from "@/components/messenger/UserAvatar";
 import type { ThreadItem } from "@/lib/chat-threads";
 import type { NewChatModalState, ThreadFilter } from "@/lib/use-messenger-threads";
 
+const resolveAvatarUrl = (avatarPath: string | null): string | null => {
+  if (!avatarPath) {
+    return null;
+  }
+
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL;
+  if (!apiUrl) {
+    return null;
+  }
+
+  const baseUrl = apiUrl.replace(/\/api\/?$/, "");
+  const normalizedPath = avatarPath.replace(/^public\//, "").replace(/^\/+/, "");
+
+  return `${baseUrl}/storage/${normalizedPath}`;
+};
+
 interface MessengerThreadsSidebarProps {
   threads: ThreadItem[];
   filteredThreads: ThreadItem[];
@@ -193,6 +209,7 @@ export default function MessengerThreadsSidebar({
               const counterpartId = thread.counterpartId ?? null;
               const isOnline = counterpartId ? Boolean(presenceByUserId[counterpartId]?.isOnline) : false;
               const showStatus = thread.type === "direct";
+              const avatarUrl = resolveAvatarUrl(thread.avatarPath);
 
               return (
                 <Link
@@ -203,7 +220,7 @@ export default function MessengerThreadsSidebar({
                   }`}
                 >
                   <div className="mt-0.5 shrink-0">
-                    <UserAvatar name={thread.name} size={40} isOnline={isOnline} showStatus={showStatus} />
+                    <UserAvatar name={thread.name} src={avatarUrl} size={40} isOnline={isOnline} showStatus={showStatus} />
                   </div>
 
                   <div className="min-w-0 flex-1">

@@ -4,6 +4,7 @@ export interface ThreadItem {
   id: string;
   name: string;
   handle: string;
+  avatarPath: string | null;
   lastMessage: string;
   lastTime: string;
   unread: number;
@@ -57,6 +58,7 @@ export const mapConversationToThread = (conversation: ConversationListItem): Thr
     id: String(conversation.conversation_id),
     name,
     handle,
+    avatarPath: conversation.avatar_path,
     lastMessage,
     lastTime: formatThreadRelativeTime(lastActivity),
     unread: conversation.unread_count,

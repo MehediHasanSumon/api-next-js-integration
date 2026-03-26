@@ -480,6 +480,7 @@ const mapConversationDetailToThread = (
     id: String(conversation.id),
     name: conversation.title?.trim() || counterpartName || `Conversation #${conversation.id}`,
     handle: counterpartEmail ? `@${counterpartEmail.split("@")[0]}` : `#${conversation.id}`,
+    avatarPath: conversation.avatar_path,
     lastMessage:
       conversation.last_message?.body?.trim() ||
       (conversation.last_message ? `[${conversation.last_message.message_type}]` : "No messages yet"),
@@ -1029,6 +1030,22 @@ export default function MessageThreadPage() {
     setGroupDescriptionDraft(conversation.description?.trim() || "");
     setGroupDescriptionError(null);
   }, [conversation, isGroupConversation]);
+
+  useEffect(() => {
+    if (!conversation?.id) {
+      return;
+    }
+
+    dispatch(
+      patchThread({
+        id: String(conversation.id),
+        changes: {
+          name: conversation.title?.trim() || detailsDisplayName,
+          avatarPath: conversation.avatar_path ?? null,
+        },
+      })
+    );
+  }, [conversation?.avatar_path, conversation?.id, conversation?.title, detailsDisplayName, dispatch]);
 
   const presenceSubtitle = useMemo(() => {
     if (typingIndicatorText) {
