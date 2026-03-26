@@ -91,6 +91,7 @@ class ConversationModerationService
             ->where('user_id', (int) $actor->id)
             ->update([
                 'archived_at' => null,
+                'hidden_at' => null,
             ]);
     }
 

@@ -2746,6 +2746,16 @@ export default function MessageThreadPage() {
 
     try {
       await unblockConversation(threadId);
+      dispatch(
+        patchThread({
+          id: threadId,
+          changes: {
+            archivedAt: null,
+            isBlocked: false,
+          },
+        })
+      );
+      setFilter("inbox");
       await refreshThreads();
       await refreshConversation();
     } catch (error) {
