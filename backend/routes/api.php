@@ -55,6 +55,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/conversations/{conversation}/request/respond', [ConversationController::class, 'respondToRequest']);
         Route::post('/conversations/{conversation}/archive', [ConversationController::class, 'archive']);
         Route::delete('/conversations/{conversation}/archive', [ConversationController::class, 'unarchive']);
+        Route::post('/conversations/{conversation}/mute', [ConversationController::class, 'mute']);
+        Route::delete('/conversations/{conversation}/mute', [ConversationController::class, 'unmute']);
 
         Route::get('/conversations/{conversation}/messages', [MessageController::class, 'index']);
         Route::post('/conversations/{conversation}/messages', [MessageController::class, 'store']);

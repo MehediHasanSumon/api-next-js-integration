@@ -36,6 +36,8 @@ import {
   showConversation,
   toggleMessageReaction,
   updateTyping,
+  muteConversation,
+  unmuteConversation,
   unarchiveConversation,
 } from "@/lib/chat-api";
 import { getPresenceStatus, pingPresence } from "@/lib/presence-api";
@@ -387,7 +389,45 @@ const formatClockTime = (rawDate: string): string => {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 };
 
+const isFutureIsoDate = (value: string | null | undefined): boolean => {
+  if (!value) {
+    return false;
+  }
+
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) && timestamp > Date.now();
+};
+
+const buildMuteUntilIso = (durationMs: number): string => {
+  return new Date(Date.now() + durationMs).toISOString();
+};
+
+const formatMuteUntil = (value: string | null): string => {
+  if (!value) {
+    return "";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  return date.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+};
+
 const MAX_RECORDING_SECONDS = 120;
+const MUTE_PRESETS = [
+  { id: "15m", label: "For 15 minutes", durationMs: 15 * 60 * 1000 },
+  { id: "1h", label: "For 1 Hour", durationMs: 60 * 60 * 1000 },
+  { id: "8h", label: "For 8 Hours", durationMs: 8 * 60 * 60 * 1000 },
+  { id: "24h", label: "For 24 Hours", durationMs: 24 * 60 * 60 * 1000 },
+  { id: "forever", label: "Until I turn it back on", durationMs: 10 * 365 * 24 * 60 * 60 * 1000 },
+] as const;
 
 const mapConversationDetailToThread = (
   conversation: Conversation,
@@ -525,6 +565,10 @@ export default function MessageThreadPage() {
   const [requestActionLoading, setRequestActionLoading] = useState<"accept" | "decline" | null>(null);
   const [archiveActionError, setArchiveActionError] = useState<string | null>(null);
   const [archiveActionLoading, setArchiveActionLoading] = useState(false);
+  const [muteActionError, setMuteActionError] = useState<string | null>(null);
+  const [muteActionLoading, setMuteActionLoading] = useState(false);
+  const [muteModalOpen, setMuteModalOpen] = useState(false);
+  const [selectedMutePresetId, setSelectedMutePresetId] = useState<(typeof MUTE_PRESETS)[number]["id"]>("15m");
   const [echoConnectionStatus, setEchoConnectionStatus] = useState<EchoConnectionStatus>("connecting");
   const [messageActionError, setMessageActionError] = useState<string | null>(null);
   const [groupNameDraft, setGroupNameDraft] = useState("");
@@ -2112,6 +2156,81 @@ export default function MessageThreadPage() {
     }
   };
 
+  const handleConfirmMute = async () => {
+    if (!threadId || !participant) {
+      return;
+    }
+
+    const preset = MUTE_PRESETS.find((item) => item.id === selectedMutePresetId) ?? MUTE_PRESETS[0];
+
+    setMuteActionError(null);
+    setMuteActionLoading(true);
+
+    try {
+      const response = await muteConversation(threadId, {
+        muted_until: buildMuteUntilIso(preset.durationMs),
+      });
+
+      setConversationData((previous) => {
+        if (!previous) {
+          return previous;
+        }
+
+        return {
+          ...previous,
+          participant: {
+            ...previous.participant,
+            muted_until: response.muted_until,
+          },
+        };
+      });
+
+      setMuteModalOpen(false);
+    } catch {
+      setMuteActionError("Failed to mute notifications.");
+    } finally {
+      setMuteActionLoading(false);
+    }
+  };
+
+  const handleMuteToggle = async () => {
+    if (!threadId || !participant) {
+      return;
+    }
+
+    if (!isMutedThread) {
+      setMuteActionError(null);
+      setSelectedMutePresetId("15m");
+      setMuteModalOpen(true);
+      return;
+    }
+
+    setMuteActionError(null);
+    setMuteActionLoading(true);
+
+    try {
+      const response = await unmuteConversation(threadId);
+
+      setConversationData((previous) => {
+        if (!previous) {
+          return previous;
+        }
+
+        return {
+          ...previous,
+          participant: {
+            ...previous.participant,
+            muted_until: response.muted_until,
+          },
+        };
+      });
+    } catch {
+      setMuteActionError("Failed to update notification mute status.");
+    } finally {
+      setMuteActionLoading(false);
+    }
+  };
+
   const openReactionModal = (message: Message) => {
     setMessageActionError(null);
     setReactionModalMessage(message);
@@ -2891,6 +3010,7 @@ export default function MessageThreadPage() {
   const isPendingThread = participant?.participant_state === "pending";
   const isDeclinedThread = participant?.participant_state === "declined";
   const isArchivedThread = participant?.archived_at !== null;
+  const isMutedThread = isFutureIsoDate(participant?.muted_until);
   const canSendMessage = participant?.participant_state === "accepted";
   const removeModalCanEverywhere = removeModalMessage ? canRemoveEverywhereByPolicy(removeModalMessage) : false;
 
@@ -3190,7 +3310,9 @@ export default function MessageThreadPage() {
               {attachmentError && <p className="mb-2 text-xs text-rose-600">{attachmentError}</p>}
               {messageActionError && <p className="mb-2 text-xs text-rose-600">{messageActionError}</p>}
               {requestActionError && <p className="mb-2 text-xs text-rose-600">{requestActionError}</p>}
-              {archiveActionError && <p className="mb-2 text-xs text-rose-600">{archiveActionError}</p>}
+              {(archiveActionError || muteActionError) && (
+                <p className="mb-2 text-xs text-rose-600">{archiveActionError || muteActionError}</p>
+              )}
               {isArchivedThread && <p className="mb-2 text-xs text-slate-500">This conversation is archived.</p>}
               {isPendingThread && (
                 <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -3494,9 +3616,22 @@ export default function MessageThreadPage() {
                 >
                   {archiveActionLoading ? "Saving..." : isArchivedThread ? "Unarchive" : "Archive"}
                 </Button>
-                <Button type="button" variant="ghost" size="sm" fullWidth className="justify-start border-0 text-xs font-medium text-slate-700 shadow-none">
-                  Mute notifications
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  fullWidth
+                  className="justify-start border-0 text-xs font-medium text-slate-700 shadow-none"
+                  onClick={() => void handleMuteToggle()}
+                  disabled={muteActionLoading || isLoading || !participant}
+                >
+                  {muteActionLoading ? "Saving..." : isMutedThread ? "Unmute notifications" : "Mute notifications"}
                 </Button>
+                {isMutedThread && participant?.muted_until ? (
+                  <p className="px-3 pt-1 text-[11px] text-slate-500">
+                    Muted until {formatMuteUntil(participant.muted_until)}
+                  </p>
+                ) : null}
                 <Button type="button" variant="ghost" size="sm" fullWidth className="justify-start border-0 text-xs font-medium text-rose-600 shadow-none hover:bg-rose-50">
                   Block / Report
                 </Button>
@@ -3504,6 +3639,89 @@ export default function MessageThreadPage() {
             </div>
           </MessengerInfoPanel>
       </MessengerLayout>
+
+      {muteModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <button
+            type="button"
+            className="absolute inset-0 bg-slate-900/50"
+            aria-label="Close mute modal"
+            onClick={muteActionLoading ? undefined : () => setMuteModalOpen(false)}
+          />
+          <div className="relative w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50/80 px-5 py-3.5">
+              <h2 className="text-base font-semibold text-slate-900">Mute conversation</h2>
+              <button
+                type="button"
+                className="flex h-8 w-8 items-center justify-center rounded-full bg-white text-slate-500 ring-1 ring-slate-200 transition hover:bg-slate-100"
+                aria-label="Close mute modal"
+                onClick={muteActionLoading ? undefined : () => setMuteModalOpen(false)}
+                disabled={muteActionLoading}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="px-6 pb-6 pt-5">
+              <div className="space-y-2">
+                {MUTE_PRESETS.map((preset) => {
+                  const checked = selectedMutePresetId === preset.id;
+
+                  return (
+                    <label
+                      key={preset.id}
+                      className={`flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3 transition ${
+                        checked
+                          ? "border-blue-200 bg-blue-50/70"
+                          : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50"
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="mute-duration"
+                        value={preset.id}
+                        checked={checked}
+                        onChange={() => setSelectedMutePresetId(preset.id)}
+                        disabled={muteActionLoading}
+                        className="h-5 w-5 shrink-0 accent-blue-600"
+                      />
+                      <span className={`text-sm ${checked ? "font-semibold text-slate-900" : "font-medium text-slate-700"}`}>
+                        {preset.label}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+
+              <p className="mt-3 text-xs leading-5 text-slate-600">
+                Chat windows will stay closed, and you won&apos;t get push notifications on your devices.
+              </p>
+
+              {muteActionError && <p className="mt-3 text-xs text-rose-600">{muteActionError}</p>}
+
+              <div className="mt-6 grid grid-cols-2 gap-3 border-t border-slate-200 pt-4">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setMuteModalOpen(false)}
+                  disabled={muteActionLoading}
+                  className="h-10 rounded-xl border-slate-300 bg-slate-100 text-xs font-semibold text-slate-700 hover:bg-slate-200"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => void handleConfirmMute()}
+                  disabled={muteActionLoading}
+                  className="h-10 rounded-xl border-0 bg-blue-600 text-xs font-semibold text-white hover:bg-blue-700"
+                >
+                  {muteActionLoading ? "Muting..." : "Mute"}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {reactionModalMessage && (
         <div className="fixed inset-0 z-50">

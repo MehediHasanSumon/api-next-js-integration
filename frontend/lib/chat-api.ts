@@ -7,6 +7,7 @@ import type {
   ConversationActionResponse,
   ConversationId,
   ConversationListItem,
+  ConversationMuteResponse,
   ConversationParticipant,
   ConversationRequestResponse,
   ConversationShowResponse,
@@ -48,6 +49,7 @@ export type {
   ConversationFilter,
   ConversationId,
   ConversationListItem,
+  ConversationMuteResponse,
   ConversationParticipant,
   ConversationRequestResponse,
   ConversationShowResponse,
@@ -417,6 +419,7 @@ const normalizeConversationShowResponse = (value: ConversationShowResponse): Con
     participant: {
       participant_state: (toNullableString(value.participant?.participant_state) as ParticipantState) ?? "accepted",
       archived_at: toNullableString(value.participant?.archived_at),
+      muted_until: toNullableString(value.participant?.muted_until),
       unread_count: toNumber(value.participant?.unread_count),
       last_read_message_id: value.participant?.last_read_message_id ?? null,
       last_read_at: toNullableString(value.participant?.last_read_at),
@@ -649,6 +652,21 @@ export const unarchiveConversation = async (
   return data;
 };
 
+export const muteConversation = async (
+  conversationId: ConversationId,
+  payload: { muted_until: string }
+): Promise<ConversationMuteResponse> => {
+  const { data } = await api.post<ConversationMuteResponse>(`${conversationPath(conversationId)}/mute`, payload);
+  return data;
+};
+
+export const unmuteConversation = async (
+  conversationId: ConversationId
+): Promise<ConversationMuteResponse> => {
+  const { data } = await api.delete<ConversationMuteResponse>(`${conversationPath(conversationId)}/mute`);
+  return data;
+};
+
 export const updateConversation = async (
   conversationId: ConversationId,
   payload: { title: string }
@@ -697,6 +715,8 @@ const chatApi = {
   updateTyping,
   archiveConversation,
   unarchiveConversation,
+  muteConversation,
+  unmuteConversation,
 };
 
 export default chatApi;

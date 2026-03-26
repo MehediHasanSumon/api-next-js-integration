@@ -15,6 +15,7 @@ use App\Services\Chat\ConversationAccessService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
@@ -278,6 +279,7 @@ class ConversationController extends Controller
             'participant' => [
                 'participant_state' => $participant->participant_state,
                 'archived_at' => $participant->archived_at,
+                'muted_until' => $participant->muted_until,
                 'unread_count' => $participant->unread_count,
                 'last_read_message_id' => $participant->last_read_message_id,
                 'last_read_at' => $participant->last_read_at,
@@ -524,6 +526,40 @@ class ConversationController extends Controller
         return response()->json([
             'message' => 'Conversation unarchived successfully.',
             'conversation_id' => $conversation->id,
+        ]);
+    }
+
+    public function mute(Request $request, Conversation $conversation, ConversationAccessService $accessService): JsonResponse
+    {
+        $validated = $request->validate([
+            'muted_until' => 'nullable|date|after:now',
+        ]);
+
+        $participant = $accessService->requireVisibleParticipant($conversation, $request->user());
+        $mutedUntil = isset($validated['muted_until'])
+            ? Carbon::parse((string) $validated['muted_until'])
+            : now()->addHours(8);
+
+        $participant->update([
+            'muted_until' => $mutedUntil,
+        ]);
+
+        return response()->json([
+            'message' => 'Conversation muted successfully.',
+            'conversation_id' => $conversation->id,
+            'muted_until' => $mutedUntil->toISOString(),
+        ]);
+    }
+
+    public function unmute(Request $request, Conversation $conversation, ConversationAccessService $accessService): JsonResponse
+    {
+        $participant = $accessService->requireVisibleParticipant($conversation, $request->user());
+        $participant->update(['muted_until' => null]);
+
+        return response()->json([
+            'message' => 'Conversation unmuted successfully.',
+            'conversation_id' => $conversation->id,
+            'muted_until' => null,
         ]);
     }
 

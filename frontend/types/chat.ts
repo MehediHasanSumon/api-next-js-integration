@@ -199,6 +199,7 @@ export interface ConversationShowResponse {
   participant: {
     participant_state: ParticipantState;
     archived_at: string | null;
+    muted_until: string | null;
     unread_count: number;
     last_read_message_id: MessageId | null;
     last_read_at: string | null;
@@ -208,6 +209,10 @@ export interface ConversationShowResponse {
 export interface ConversationActionResponse {
   message: string;
   conversation_id: ConversationId;
+}
+
+export interface ConversationMuteResponse extends ConversationActionResponse {
+  muted_until: string | null;
 }
 
 export interface StartConversationPayload {

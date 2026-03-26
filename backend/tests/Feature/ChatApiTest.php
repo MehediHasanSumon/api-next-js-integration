@@ -168,6 +168,43 @@ test('participant can mark conversation as read', function () {
     expect((int) $participant->unread_count)->toBe(0);
 });
 
+test('participant can mute a conversation until a future timestamp', function () {
+    $owner = User::factory()->create();
+    $peer = User::factory()->create();
+    $conversation = createDirectConversation($owner, $peer);
+    $mutedUntil = now()->addHours(8)->startOfMinute();
+
+    actingAs($owner)
+        ->postJson("/api/chat/conversations/{$conversation->id}/mute", [
+            'muted_until' => $mutedUntil->toISOString(),
+        ])
+        ->assertOk()
+        ->assertJsonPath('conversation_id', $conversation->id)
+        ->assertJsonPath('muted_until', $mutedUntil->toISOString());
+
+    $participant = $conversation->participants()->where('user_id', $owner->id)->firstOrFail();
+    expect($participant->muted_until?->toISOString())->toBe($mutedUntil->toISOString());
+});
+
+test('participant can unmute a conversation', function () {
+    $owner = User::factory()->create();
+    $peer = User::factory()->create();
+    $conversation = createDirectConversation($owner, $peer);
+
+    $conversation->participants()
+        ->where('user_id', $owner->id)
+        ->update(['muted_until' => now()->addDay()]);
+
+    actingAs($owner)
+        ->deleteJson("/api/chat/conversations/{$conversation->id}/mute")
+        ->assertOk()
+        ->assertJsonPath('conversation_id', $conversation->id)
+        ->assertJsonPath('muted_until', null);
+
+    $participant = $conversation->participants()->where('user_id', $owner->id)->firstOrFail();
+    expect($participant->muted_until)->toBeNull();
+});
+
 test('pending conversation request can be declined', function () {
     $sender = User::factory()->create();
     $receiver = User::factory()->create();
