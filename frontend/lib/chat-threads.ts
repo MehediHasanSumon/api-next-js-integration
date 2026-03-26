@@ -8,6 +8,7 @@ export interface ThreadItem {
   lastTime: string;
   unread: number;
   participantState: ParticipantState;
+  archivedAt: string | null;
   type: string | null;
   counterpartId: number | null;
 }
@@ -60,6 +61,7 @@ export const mapConversationToThread = (conversation: ConversationListItem): Thr
     lastTime: formatThreadRelativeTime(lastActivity),
     unread: conversation.unread_count,
     participantState: conversation.participant_state,
+    archivedAt: conversation.archived_at,
     type: conversation.type,
     counterpartId: conversation.counterpart?.id ?? null,
   };

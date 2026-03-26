@@ -20,6 +20,7 @@ import {
   archiveConversation,
   addConversationParticipants,
   forwardMessage,
+  leaveConversation,
   listChatUsers,
   listConversations,
   listMessages,
@@ -31,11 +32,14 @@ import {
   respondToConversationRequest,
   sendMessage,
   updateConversation,
+  updateConversationParticipantRole,
   updateMessage,
   uploadChatAttachment,
   showConversation,
   toggleMessageReaction,
   updateTyping,
+  muteConversation,
+  unmuteConversation,
   unarchiveConversation,
 } from "@/lib/chat-api";
 import { getPresenceStatus, pingPresence } from "@/lib/presence-api";
@@ -387,22 +391,70 @@ const formatClockTime = (rawDate: string): string => {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 };
 
+const isFutureIsoDate = (value: string | null | undefined): boolean => {
+  if (!value) {
+    return false;
+  }
+
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) && timestamp > Date.now();
+};
+
+const buildMuteUntilIso = (durationMs: number): string => {
+  return new Date(Date.now() + durationMs).toISOString();
+};
+
+const formatMuteUntil = (value: string | null): string => {
+  if (!value) {
+    return "";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  return date.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+};
+
 const MAX_RECORDING_SECONDS = 120;
+const MUTE_PRESETS = [
+  { id: "15m", label: "For 15 minutes", durationMs: 15 * 60 * 1000 },
+  { id: "1h", label: "For 1 Hour", durationMs: 60 * 60 * 1000 },
+  { id: "8h", label: "For 8 Hours", durationMs: 8 * 60 * 60 * 1000 },
+  { id: "24h", label: "For 24 Hours", durationMs: 24 * 60 * 60 * 1000 },
+  { id: "forever", label: "Until I turn it back on", durationMs: 10 * 365 * 24 * 60 * 60 * 1000 },
+] as const;
 
 const mapConversationDetailToThread = (
   conversation: Conversation,
-  participant: ConversationShowResponse["participant"] | null
+  participant: ConversationShowResponse["participant"] | null,
+  currentUserId: number | null
 ): ThreadItem => {
+  const participants = conversation.participants ?? [];
+  const counterpart =
+    conversation.type === "direct" && currentUserId !== null
+      ? participants.find((item) => item.user && Number(item.user_id) !== Number(currentUserId))?.user ?? null
+      : null;
+  const counterpartName = counterpart?.name?.trim();
+  const counterpartEmail = counterpart?.email;
+
   return {
     id: String(conversation.id),
-    name: conversation.title?.trim() || `Conversation #${conversation.id}`,
-    handle: `#${conversation.id}`,
+    name: conversation.title?.trim() || counterpartName || `Conversation #${conversation.id}`,
+    handle: counterpartEmail ? `@${counterpartEmail.split("@")[0]}` : `#${conversation.id}`,
     lastMessage:
       conversation.last_message?.body?.trim() ||
       (conversation.last_message ? `[${conversation.last_message.message_type}]` : "No messages yet"),
     lastTime: formatThreadRelativeTime(conversation.last_message?.created_at ?? conversation.last_message_at),
     unread: participant?.unread_count ?? 0,
     participantState: participant?.participant_state ?? "accepted",
+    archivedAt: participant?.archived_at ?? null,
     type: conversation.type ?? null,
     counterpartId: null,
   };
@@ -525,12 +577,22 @@ export default function MessageThreadPage() {
   const [requestActionLoading, setRequestActionLoading] = useState<"accept" | "decline" | null>(null);
   const [archiveActionError, setArchiveActionError] = useState<string | null>(null);
   const [archiveActionLoading, setArchiveActionLoading] = useState(false);
+  const [muteActionError, setMuteActionError] = useState<string | null>(null);
+  const [muteActionLoading, setMuteActionLoading] = useState(false);
+  const [muteModalOpen, setMuteModalOpen] = useState(false);
+  const [selectedMutePresetId, setSelectedMutePresetId] = useState<(typeof MUTE_PRESETS)[number]["id"]>("15m");
   const [echoConnectionStatus, setEchoConnectionStatus] = useState<EchoConnectionStatus>("connecting");
   const [messageActionError, setMessageActionError] = useState<string | null>(null);
   const [groupNameDraft, setGroupNameDraft] = useState("");
   const [groupNameEditing, setGroupNameEditing] = useState(false);
   const [groupNameSaving, setGroupNameSaving] = useState(false);
   const [groupNameError, setGroupNameError] = useState<string | null>(null);
+  const [groupDescriptionDraft, setGroupDescriptionDraft] = useState("");
+  const [groupDescriptionEditing, setGroupDescriptionEditing] = useState(false);
+  const [groupDescriptionSaving, setGroupDescriptionSaving] = useState(false);
+  const [groupDescriptionError, setGroupDescriptionError] = useState<string | null>(null);
+  const [groupAvatarSaving, setGroupAvatarSaving] = useState(false);
+  const [groupAvatarError, setGroupAvatarError] = useState<string | null>(null);
   const [membersModalOpen, setMembersModalOpen] = useState(false);
   const [memberDirectory, setMemberDirectory] = useState<DirectoryUser[]>([]);
   const [memberSearch, setMemberSearch] = useState("");
@@ -539,6 +601,9 @@ export default function MessageThreadPage() {
   const [memberSelection, setMemberSelection] = useState<Set<number>>(new Set());
   const [memberSaving, setMemberSaving] = useState(false);
   const [memberActionError, setMemberActionError] = useState<string | null>(null);
+  const [memberRoleUpdatingId, setMemberRoleUpdatingId] = useState<number | null>(null);
+  const [leaveGroupLoading, setLeaveGroupLoading] = useState(false);
+  const [leaveGroupError, setLeaveGroupError] = useState<string | null>(null);
   const [reactionModalMessage, setReactionModalMessage] = useState<Message | null>(null);
   const [reactionPopoverPosition, setReactionPopoverPosition] = useState<{ top: number; left: number } | null>(null);
   const [reactionMutationLoadingKey, setReactionMutationLoadingKey] = useState<string | null>(null);
@@ -590,6 +655,7 @@ export default function MessageThreadPage() {
   const processedRealtimeEventKeysRef = useRef<string[]>([]);
   const processedRealtimeEventLookupRef = useRef<Set<string>>(new Set());
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
+  const groupAvatarInputRef = useRef<HTMLInputElement | null>(null);
   const composerInputRef = useRef<HTMLInputElement | null>(null);
   const previousDraftRef = useRef<string>("");
   const messageBubbleRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -628,6 +694,14 @@ export default function MessageThreadPage() {
     setArchiveActionLoading(false);
     setEchoConnectionStatus("connecting");
     setMessageActionError(null);
+    setLeaveGroupLoading(false);
+    setLeaveGroupError(null);
+    setGroupDescriptionEditing(false);
+    setGroupDescriptionSaving(false);
+    setGroupDescriptionError(null);
+    setGroupAvatarSaving(false);
+    setGroupAvatarError(null);
+    setMemberRoleUpdatingId(null);
     setReactionModalMessage(null);
     setReactionMutationLoadingKey(null);
     setForwardModalMessage(null);
@@ -709,11 +783,11 @@ export default function MessageThreadPage() {
     }
 
     if (conversationData?.conversation) {
-      return mapConversationDetailToThread(conversationData.conversation, conversationData.participant);
+      return mapConversationDetailToThread(conversationData.conversation, conversationData.participant, currentUserId);
     }
 
     return null;
-  }, [conversationData, threadId, threads]);
+  }, [conversationData, currentUserId, threadId, threads]);
 
   const conversation = conversationData?.conversation ?? null;
   const participant = conversationData?.participant ?? null;
@@ -888,6 +962,8 @@ export default function MessageThreadPage() {
 
     setGroupNameDraft(conversation.title?.trim() || "");
     setGroupNameError(null);
+    setGroupDescriptionDraft(conversation.description?.trim() || "");
+    setGroupDescriptionError(null);
   }, [conversation, isGroupConversation]);
 
   const presenceSubtitle = useMemo(() => {
@@ -1574,6 +1650,64 @@ export default function MessageThreadPage() {
       void refreshConversation().catch(() => undefined);
     });
 
+    channel.listen(
+      ".chat.conversation.updated",
+      (payload: {
+        conversation_id: number | string;
+        changes?: {
+          title?: string | null;
+          description?: string | null;
+          avatar_path?: string | null;
+          participants_updated?: boolean;
+        };
+      }) => {
+        if (String(payload.conversation_id) !== threadId) {
+          return;
+        }
+
+        if (
+          payload.changes?.title ||
+          Object.prototype.hasOwnProperty.call(payload.changes ?? {}, "description") ||
+          Object.prototype.hasOwnProperty.call(payload.changes ?? {}, "avatar_path")
+        ) {
+          setConversationData((previous) => {
+            if (!previous) {
+              return previous;
+            }
+
+            return {
+              ...previous,
+              conversation: {
+                ...previous.conversation,
+                title: payload.changes?.title ?? previous.conversation.title,
+                description: Object.prototype.hasOwnProperty.call(payload.changes ?? {}, "description")
+                  ? payload.changes?.description ?? null
+                  : previous.conversation.description,
+                avatar_path: Object.prototype.hasOwnProperty.call(payload.changes ?? {}, "avatar_path")
+                  ? payload.changes?.avatar_path ?? null
+                  : previous.conversation.avatar_path,
+              },
+            };
+          });
+
+          if (payload.changes?.title) {
+            dispatch(
+              patchThread({
+                id: threadId,
+                changes: {
+                  name: payload.changes.title,
+                },
+              })
+            );
+          }
+        }
+
+        if (payload.changes?.participants_updated) {
+          void refreshConversation().catch(() => undefined);
+        }
+      }
+    );
+
     channel.listen(".chat.user.presence.updated", (payload: ChatUserPresenceUpdatedEvent) => {
       const offset = resolveServerClockOffsetMs(payload.sent_at);
       if (offset !== null) {
@@ -1984,45 +2118,8 @@ export default function MessageThreadPage() {
       draftAttachments.forEach((item) => {
         if (item.previewUrl) {
           URL.revokeObjectURL(item.previewUrl);
-      }
-    });
-
-    channel.listen(
-      ".chat.conversation.updated",
-      (payload: { conversation_id: number | string; changes?: { title?: string | null; participants_updated?: boolean } }) => {
-      if (String(payload.conversation_id) !== threadId) {
-        return;
-      }
-
-      if (payload.changes?.title) {
-        setConversationData((previous) => {
-          if (!previous) {
-            return previous;
-          }
-
-          return {
-            ...previous,
-            conversation: {
-              ...previous.conversation,
-              title: payload.changes?.title ?? previous.conversation.title,
-            },
-          };
-        });
-
-        dispatch(
-          patchThread({
-            id: threadId,
-            changes: {
-              name: payload.changes.title,
-            },
-          })
-        );
-      }
-
-      if (payload.changes?.participants_updated) {
-        void refreshConversation();
-      }
-    });
+        }
+      });
       setDraftAttachments([]);
       setAttachmentError(null);
     } catch (error) {
@@ -2105,10 +2202,89 @@ export default function MessageThreadPage() {
       });
 
       await refreshThreads();
+
+      if (shouldArchive) {
+        router.push("/masseges");
+      }
     } catch {
       setArchiveActionError("Failed to update archive status.");
     } finally {
       setArchiveActionLoading(false);
+    }
+  };
+
+  const handleConfirmMute = async () => {
+    if (!threadId || !participant) {
+      return;
+    }
+
+    const preset = MUTE_PRESETS.find((item) => item.id === selectedMutePresetId) ?? MUTE_PRESETS[0];
+
+    setMuteActionError(null);
+    setMuteActionLoading(true);
+
+    try {
+      const response = await muteConversation(threadId, {
+        muted_until: buildMuteUntilIso(preset.durationMs),
+      });
+
+      setConversationData((previous) => {
+        if (!previous) {
+          return previous;
+        }
+
+        return {
+          ...previous,
+          participant: {
+            ...previous.participant,
+            muted_until: response.muted_until,
+          },
+        };
+      });
+
+      setMuteModalOpen(false);
+    } catch {
+      setMuteActionError("Failed to mute notifications.");
+    } finally {
+      setMuteActionLoading(false);
+    }
+  };
+
+  const handleMuteToggle = async () => {
+    if (!threadId || !participant) {
+      return;
+    }
+
+    if (!isMutedThread) {
+      setMuteActionError(null);
+      setSelectedMutePresetId("15m");
+      setMuteModalOpen(true);
+      return;
+    }
+
+    setMuteActionError(null);
+    setMuteActionLoading(true);
+
+    try {
+      const response = await unmuteConversation(threadId);
+
+      setConversationData((previous) => {
+        if (!previous) {
+          return previous;
+        }
+
+        return {
+          ...previous,
+          participant: {
+            ...previous.participant,
+            muted_until: response.muted_until,
+          },
+        };
+      });
+    } catch {
+      setMuteActionError("Failed to update notification mute status.");
+    } finally {
+      setMuteActionLoading(false);
     }
   };
 
@@ -2135,6 +2311,12 @@ export default function MessageThreadPage() {
     setGroupNameEditing(false);
     setGroupNameError(null);
     setGroupNameDraft(conversation?.title?.trim() || "");
+  };
+
+  const cancelGroupDescriptionEdit = () => {
+    setGroupDescriptionEditing(false);
+    setGroupDescriptionError(null);
+    setGroupDescriptionDraft(conversation?.description?.trim() || "");
   };
 
   const handleGroupNameSave = async () => {
@@ -2181,6 +2363,79 @@ export default function MessageThreadPage() {
       setGroupNameError(firstError || axiosError.response?.data?.message || "Failed to update group name.");
     } finally {
       setGroupNameSaving(false);
+    }
+  };
+
+  const handleGroupDescriptionSave = async () => {
+    if (!threadId || !conversation || !isGroupConversation || !canEditGroupName) {
+      return;
+    }
+
+    setGroupDescriptionSaving(true);
+    setGroupDescriptionError(null);
+
+    try {
+      const response = await updateConversation(threadId, {
+        description: groupDescriptionDraft.trim() || null,
+      });
+
+      setConversationData((previous) => {
+        if (!previous) {
+          return previous;
+        }
+
+        return {
+          ...previous,
+          conversation: {
+            ...previous.conversation,
+            description: response.conversation.description ?? null,
+          },
+        };
+      });
+
+      setGroupDescriptionEditing(false);
+    } catch (error) {
+      const axiosError = error as AxiosError<ApiValidationErrorPayload>;
+      const firstError = Object.values(axiosError.response?.data?.errors ?? {})[0]?.[0];
+      setGroupDescriptionError(firstError || axiosError.response?.data?.message || "Failed to update group description.");
+    } finally {
+      setGroupDescriptionSaving(false);
+    }
+  };
+
+  const handleGroupAvatarChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const nextFile = event.target.files?.[0] ?? null;
+    event.target.value = "";
+
+    if (!nextFile || !threadId || !conversation || !isGroupConversation || !canEditGroupName) {
+      return;
+    }
+
+    setGroupAvatarSaving(true);
+    setGroupAvatarError(null);
+
+    try {
+      const response = await updateConversation(threadId, { avatar: nextFile });
+
+      setConversationData((previous) => {
+        if (!previous) {
+          return previous;
+        }
+
+        return {
+          ...previous,
+          conversation: {
+            ...previous.conversation,
+            avatar_path: response.conversation.avatar_path ?? null,
+          },
+        };
+      });
+    } catch (error) {
+      const axiosError = error as AxiosError<ApiValidationErrorPayload>;
+      const firstError = Object.values(axiosError.response?.data?.errors ?? {})[0]?.[0];
+      setGroupAvatarError(firstError || axiosError.response?.data?.message || "Failed to update group photo.");
+    } finally {
+      setGroupAvatarSaving(false);
     }
   };
 
@@ -2271,6 +2526,48 @@ export default function MessageThreadPage() {
       const axiosError = error as AxiosError<ApiValidationErrorPayload>;
       const firstError = Object.values(axiosError.response?.data?.errors ?? {})[0]?.[0];
       setMemberActionError(firstError || axiosError.response?.data?.message || "Failed to remove member.");
+    }
+  };
+
+  const handleTransferOwnership = async (userId: number) => {
+    if (!threadId || !isGroupConversation || !canEditGroupMembers) {
+      return;
+    }
+
+    setMemberActionError(null);
+    setMemberRoleUpdatingId(userId);
+
+    try {
+      await updateConversationParticipantRole(threadId, userId, { role: "owner" });
+      await refreshConversation();
+      await refreshThreads();
+    } catch (error) {
+      const axiosError = error as AxiosError<ApiValidationErrorPayload>;
+      const firstError = Object.values(axiosError.response?.data?.errors ?? {})[0]?.[0];
+      setMemberActionError(firstError || axiosError.response?.data?.message || "Failed to transfer ownership.");
+    } finally {
+      setMemberRoleUpdatingId(null);
+    }
+  };
+
+  const handleLeaveGroup = async () => {
+    if (!threadId || !isGroupConversation || participant?.participant_state !== "accepted") {
+      return;
+    }
+
+    setLeaveGroupError(null);
+    setLeaveGroupLoading(true);
+
+    try {
+      await leaveConversation(threadId);
+      await refreshThreads();
+      router.push("/masseges");
+    } catch (error) {
+      const axiosError = error as AxiosError<ApiValidationErrorPayload>;
+      const firstError = Object.values(axiosError.response?.data?.errors ?? {})[0]?.[0];
+      setLeaveGroupError(firstError || axiosError.response?.data?.message || "Failed to leave group.");
+    } finally {
+      setLeaveGroupLoading(false);
     }
   };
 
@@ -2891,6 +3188,7 @@ export default function MessageThreadPage() {
   const isPendingThread = participant?.participant_state === "pending";
   const isDeclinedThread = participant?.participant_state === "declined";
   const isArchivedThread = participant?.archived_at !== null;
+  const isMutedThread = isFutureIsoDate(participant?.muted_until);
   const canSendMessage = participant?.participant_state === "accepted";
   const removeModalCanEverywhere = removeModalMessage ? canRemoveEverywhereByPolicy(removeModalMessage) : false;
 
@@ -3190,7 +3488,9 @@ export default function MessageThreadPage() {
               {attachmentError && <p className="mb-2 text-xs text-rose-600">{attachmentError}</p>}
               {messageActionError && <p className="mb-2 text-xs text-rose-600">{messageActionError}</p>}
               {requestActionError && <p className="mb-2 text-xs text-rose-600">{requestActionError}</p>}
-              {archiveActionError && <p className="mb-2 text-xs text-rose-600">{archiveActionError}</p>}
+              {(archiveActionError || muteActionError) && (
+                <p className="mb-2 text-xs text-rose-600">{archiveActionError || muteActionError}</p>
+              )}
               {isArchivedThread && <p className="mb-2 text-xs text-slate-500">This conversation is archived.</p>}
               {isPendingThread && (
                 <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -3344,6 +3644,31 @@ export default function MessageThreadPage() {
                 <p className="mt-3 text-sm font-semibold text-slate-900">{detailsDisplayName}</p>
                 {isGroupConversation ? (
                   <div className="mt-3 text-left">
+                    {canEditGroupName && (
+                      <div className="mb-4">
+                        <input
+                          ref={groupAvatarInputRef}
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={(event) => void handleGroupAvatarChange(event)}
+                        />
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Group photo</p>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="rounded-full px-3 text-[11px]"
+                            onClick={() => groupAvatarInputRef.current?.click()}
+                            disabled={groupAvatarSaving}
+                          >
+                            {groupAvatarSaving ? "Uploading..." : detailsAvatarUrl ? "Change photo" : "Upload photo"}
+                          </Button>
+                        </div>
+                        {groupAvatarError && <p className="mt-2 text-xs text-rose-600">{groupAvatarError}</p>}
+                      </div>
+                    )}
                     <div className="flex items-center justify-between gap-2">
                       <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Group name</p>
                       {!groupNameEditing && canEditGroupName && (
@@ -3416,7 +3741,10 @@ export default function MessageThreadPage() {
                       const isOwner = member.role === "owner";
                       const showRemove =
                         canEditGroupMembers && !isOwner && Number(member.id) !== Number(currentUserId);
+                      const showTransferOwnership =
+                        canEditGroupMembers && !isOwner && Number(member.id) !== Number(currentUserId);
                       const isOnline = Boolean(presenceByUserId[member.id]?.isOnline);
+                      const isTransferringOwnership = memberRoleUpdatingId === member.id;
 
                       return (
                         <div
@@ -3430,14 +3758,29 @@ export default function MessageThreadPage() {
                               <p className="text-[11px] text-slate-500">{isOwner ? "Owner" : "Member"}</p>
                             </div>
                           </div>
-                          {showRemove ? (
-                            <button
-                              type="button"
-                              className="text-xs font-semibold text-rose-600 hover:text-rose-700"
-                              onClick={() => void handleRemoveMember(member.id)}
-                            >
-                              Remove
-                            </button>
+                          {(showTransferOwnership || showRemove) ? (
+                            <div className="flex items-center gap-2">
+                              {showTransferOwnership ? (
+                                <button
+                                  type="button"
+                                  className="text-xs font-semibold text-blue-600 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                                  onClick={() => void handleTransferOwnership(member.id)}
+                                  disabled={Boolean(memberRoleUpdatingId)}
+                                >
+                                  {isTransferringOwnership ? "Saving..." : "Make owner"}
+                                </button>
+                              ) : null}
+                              {showRemove ? (
+                                <button
+                                  type="button"
+                                  className="text-xs font-semibold text-rose-600 hover:text-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
+                                  onClick={() => void handleRemoveMember(member.id)}
+                                  disabled={Boolean(memberRoleUpdatingId)}
+                                >
+                                  Remove
+                                </button>
+                              ) : null}
+                            </div>
                           ) : null}
                         </div>
                       );
@@ -3448,10 +3791,56 @@ export default function MessageThreadPage() {
               )}
 
               <div className="rounded-xl border border-slate-200 bg-white p-4">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">About</p>
-                <p className="mt-2 text-xs leading-relaxed text-slate-600">
-                  {conversation?.description || "Direct conversation thread."}
-                </p>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">About</p>
+                  {isGroupConversation && canEditGroupName && !groupDescriptionEditing && (
+                    <button
+                      type="button"
+                      className="text-[11px] font-semibold text-slate-500 hover:text-slate-700"
+                      onClick={() => setGroupDescriptionEditing(true)}
+                    >
+                      Edit
+                    </button>
+                  )}
+                </div>
+                {isGroupConversation && canEditGroupName && groupDescriptionEditing ? (
+                  <div className="mt-2 space-y-2">
+                    <textarea
+                      value={groupDescriptionDraft}
+                      onChange={(event) => setGroupDescriptionDraft(event.target.value)}
+                      placeholder="Write a short group description"
+                      rows={4}
+                      className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[color:var(--messenger-blue)]/30"
+                      disabled={groupDescriptionSaving}
+                    />
+                    {groupDescriptionError && <p className="text-xs text-rose-600">{groupDescriptionError}</p>}
+                    <div className="flex gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        className="rounded-full px-3 text-xs"
+                        onClick={() => void handleGroupDescriptionSave()}
+                        disabled={groupDescriptionSaving}
+                      >
+                        {groupDescriptionSaving ? "Saving..." : "Save"}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="rounded-full px-3 text-xs"
+                        onClick={cancelGroupDescriptionEdit}
+                        disabled={groupDescriptionSaving}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="mt-2 text-xs leading-relaxed text-slate-600">
+                    {conversation?.description || "Direct conversation thread."}
+                  </p>
+                )}
               </div>
 
               <div className="rounded-xl border border-slate-200 bg-white p-4">
@@ -3494,9 +3883,36 @@ export default function MessageThreadPage() {
                 >
                   {archiveActionLoading ? "Saving..." : isArchivedThread ? "Unarchive" : "Archive"}
                 </Button>
-                <Button type="button" variant="ghost" size="sm" fullWidth className="justify-start border-0 text-xs font-medium text-slate-700 shadow-none">
-                  Mute notifications
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  fullWidth
+                  className="justify-start border-0 text-xs font-medium text-slate-700 shadow-none"
+                  onClick={() => void handleMuteToggle()}
+                  disabled={muteActionLoading || isLoading || !participant}
+                >
+                  {muteActionLoading ? "Saving..." : isMutedThread ? "Unmute notifications" : "Mute notifications"}
                 </Button>
+                {isMutedThread && participant?.muted_until ? (
+                  <p className="px-3 pt-1 text-[11px] text-slate-500">
+                    Muted until {formatMuteUntil(participant.muted_until)}
+                  </p>
+                ) : null}
+                {isGroupConversation && participant?.participant_state === "accepted" ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    fullWidth
+                    className="justify-start border-0 text-xs font-medium text-rose-600 shadow-none hover:bg-rose-50"
+                    onClick={() => void handleLeaveGroup()}
+                    disabled={leaveGroupLoading}
+                  >
+                    {leaveGroupLoading ? "Leaving..." : "Leave group"}
+                  </Button>
+                ) : null}
+                {leaveGroupError ? <p className="px-3 pt-1 text-[11px] text-rose-600">{leaveGroupError}</p> : null}
                 <Button type="button" variant="ghost" size="sm" fullWidth className="justify-start border-0 text-xs font-medium text-rose-600 shadow-none hover:bg-rose-50">
                   Block / Report
                 </Button>
@@ -3504,6 +3920,89 @@ export default function MessageThreadPage() {
             </div>
           </MessengerInfoPanel>
       </MessengerLayout>
+
+      {muteModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <button
+            type="button"
+            className="absolute inset-0 bg-slate-900/50"
+            aria-label="Close mute modal"
+            onClick={muteActionLoading ? undefined : () => setMuteModalOpen(false)}
+          />
+          <div className="relative w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50/80 px-5 py-3.5">
+              <h2 className="text-base font-semibold text-slate-900">Mute conversation</h2>
+              <button
+                type="button"
+                className="flex h-8 w-8 items-center justify-center rounded-full bg-white text-slate-500 ring-1 ring-slate-200 transition hover:bg-slate-100"
+                aria-label="Close mute modal"
+                onClick={muteActionLoading ? undefined : () => setMuteModalOpen(false)}
+                disabled={muteActionLoading}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="px-6 pb-6 pt-5">
+              <div className="space-y-2">
+                {MUTE_PRESETS.map((preset) => {
+                  const checked = selectedMutePresetId === preset.id;
+
+                  return (
+                    <label
+                      key={preset.id}
+                      className={`flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3 transition ${
+                        checked
+                          ? "border-blue-200 bg-blue-50/70"
+                          : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50"
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="mute-duration"
+                        value={preset.id}
+                        checked={checked}
+                        onChange={() => setSelectedMutePresetId(preset.id)}
+                        disabled={muteActionLoading}
+                        className="h-5 w-5 shrink-0 accent-blue-600"
+                      />
+                      <span className={`text-sm ${checked ? "font-semibold text-slate-900" : "font-medium text-slate-700"}`}>
+                        {preset.label}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+
+              <p className="mt-3 text-xs leading-5 text-slate-600">
+                Chat windows will stay closed, and you won&apos;t get push notifications on your devices.
+              </p>
+
+              {muteActionError && <p className="mt-3 text-xs text-rose-600">{muteActionError}</p>}
+
+              <div className="mt-6 grid grid-cols-2 gap-3 border-t border-slate-200 pt-4">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setMuteModalOpen(false)}
+                  disabled={muteActionLoading}
+                  className="h-10 rounded-xl border-slate-300 bg-slate-100 text-xs font-semibold text-slate-700 hover:bg-slate-200"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => void handleConfirmMute()}
+                  disabled={muteActionLoading}
+                  className="h-10 rounded-xl border-0 bg-blue-600 text-xs font-semibold text-white hover:bg-blue-700"
+                >
+                  {muteActionLoading ? "Muting..." : "Mute"}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {reactionModalMessage && (
         <div className="fixed inset-0 z-50">

@@ -15,6 +15,8 @@ use App\Services\Chat\ConversationAccessService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
@@ -266,6 +268,13 @@ class ConversationController extends Controller
 
         $conversation->load([
             'creator:id,name,email',
+            'participants' => function ($query) use ($conversation): void {
+                if ($conversation->type === 'group') {
+                    $query
+                        ->whereNull('hidden_at')
+                        ->where('participant_state', 'accepted');
+                }
+            },
             'participants.user:id,name,email,last_seen_at',
         ]);
 
@@ -278,6 +287,7 @@ class ConversationController extends Controller
             'participant' => [
                 'participant_state' => $participant->participant_state,
                 'archived_at' => $participant->archived_at,
+                'muted_until' => $participant->muted_until,
                 'unread_count' => $participant->unread_count,
                 'last_read_message_id' => $participant->last_read_message_id,
                 'last_read_at' => $participant->last_read_at,
@@ -302,24 +312,59 @@ class ConversationController extends Controller
         }
 
         $validated = $request->validate([
-            'title' => 'required|string|min:1|max:100',
+            'title' => 'sometimes|nullable|string|max:100',
+            'description' => 'sometimes|nullable|string|max:1000',
+            'avatar' => 'sometimes|nullable|image|max:5120',
         ]);
 
-        $title = trim((string) $validated['title']);
-        if ($title === '') {
+        if (!array_key_exists('title', $validated) && !array_key_exists('description', $validated) && !$request->hasFile('avatar')) {
             throw ValidationException::withMessages([
-                'title' => ['Group name is required.'],
+                'conversation' => ['Provide at least one field to update.'],
             ]);
         }
 
-        $conversation->update([
-            'title' => $title,
-        ]);
+        $changes = [];
+        $updates = [];
+
+        if (array_key_exists('title', $validated)) {
+            $title = trim((string) ($validated['title'] ?? ''));
+            if ($title === '') {
+                throw ValidationException::withMessages([
+                    'title' => ['Group name is required.'],
+                ]);
+            }
+
+            $updates['title'] = $title;
+            $changes['title'] = $title;
+        }
+
+        if (array_key_exists('description', $validated)) {
+            $description = $validated['description'];
+            if (is_string($description)) {
+                $description = trim($description);
+            }
+
+            $updates['description'] = $description !== '' ? $description : null;
+            $changes['description'] = $updates['description'];
+        }
+
+        if ($request->hasFile('avatar')) {
+            $newAvatarPath = $request->file('avatar')->store('chat/avatars', 'public');
+
+            if ($conversation->avatar_path && Storage::disk('public')->exists($conversation->avatar_path)) {
+                Storage::disk('public')->delete($conversation->avatar_path);
+            }
+
+            $updates['avatar_path'] = $newAvatarPath;
+            $changes['avatar_path'] = $newAvatarPath;
+        }
+
+        $conversation->update($updates);
 
         $recipientIds = $accessService->visibleRecipientIds($conversation, (int) $request->user()->id);
         broadcast(new ConversationUpdated(
             (int) $conversation->id,
-            ['title' => $title],
+            $changes,
             $recipientIds
         ))->toOthers();
 
@@ -366,18 +411,36 @@ class ConversationController extends Controller
             ]);
         }
 
-        $existingIds = $conversation->participants()->pluck('user_id')->map(fn ($id) => (int) $id)->all();
-        $newIds = array_values(array_diff($incomingIds, $existingIds));
-
-        if ($newIds === []) {
-            return response()->json([
-                'message' => 'No new participants to add.',
-                'conversation' => $conversation->fresh(['participants.user']),
-            ]);
-        }
-
         $now = now();
-        foreach ($newIds as $userId) {
+        $changesApplied = false;
+
+        foreach ($incomingIds as $userId) {
+            $existingParticipant = $conversation->participants()
+                ->where('user_id', $userId)
+                ->first();
+
+            if ($existingParticipant) {
+                $shouldRestoreParticipant = $existingParticipant->hidden_at !== null
+                    || $existingParticipant->participant_state !== 'accepted'
+                    || $existingParticipant->archived_at !== null;
+
+                if (!$shouldRestoreParticipant) {
+                    continue;
+                }
+
+                $existingParticipant->update([
+                    'role' => $existingParticipant->role === 'owner' ? 'owner' : 'member',
+                    'participant_state' => 'accepted',
+                    'accepted_at' => $now,
+                    'declined_at' => null,
+                    'hidden_at' => null,
+                    'archived_at' => null,
+                    'unread_count' => 0,
+                ]);
+                $changesApplied = true;
+                continue;
+            }
+
             $conversation->participants()->create([
                 'user_id' => $userId,
                 'role' => 'member',
@@ -386,6 +449,14 @@ class ConversationController extends Controller
                 'declined_at' => null,
                 'hidden_at' => null,
                 'archived_at' => null,
+            ]);
+            $changesApplied = true;
+        }
+
+        if (!$changesApplied) {
+            return response()->json([
+                'message' => 'No new participants to add.',
+                'conversation' => $conversation->fresh(['participants.user']),
             ]);
         }
 
@@ -464,6 +535,137 @@ class ConversationController extends Controller
         ]);
     }
 
+    public function updateParticipantRole(
+        Request $request,
+        Conversation $conversation,
+        User $user,
+        ConversationAccessService $accessService
+    ): JsonResponse {
+        $participant = $accessService->requireAcceptedParticipant($conversation, $request->user());
+
+        if ($conversation->type !== 'group') {
+            throw ValidationException::withMessages([
+                'conversation' => ['Only group conversations can be updated.'],
+            ]);
+        }
+
+        if ($participant->role !== 'owner') {
+            throw ValidationException::withMessages([
+                'conversation' => ['Only group owners can update member roles.'],
+            ]);
+        }
+
+        $validated = $request->validate([
+            'role' => 'required|string|in:owner',
+        ]);
+
+        if ((int) $user->id === (int) $request->user()->id) {
+            throw ValidationException::withMessages([
+                'participant' => ['Select another member to transfer ownership.'],
+            ]);
+        }
+
+        $targetParticipant = $conversation->participants()
+            ->where('user_id', $user->id)
+            ->whereNull('hidden_at')
+            ->where('participant_state', 'accepted')
+            ->first();
+
+        if (!$targetParticipant) {
+            throw ValidationException::withMessages([
+                'participant' => ['User must be an active group member.'],
+            ]);
+        }
+
+        if ($validated['role'] === 'owner' && $targetParticipant->role !== 'owner') {
+            DB::transaction(function () use ($participant, $targetParticipant): void {
+                $participant->update([
+                    'role' => 'member',
+                ]);
+
+                $targetParticipant->update([
+                    'role' => 'owner',
+                ]);
+            });
+        }
+
+        $recipientIds = $accessService->visibleRecipientIds($conversation, (int) $request->user()->id);
+        broadcast(new ConversationUpdated(
+            (int) $conversation->id,
+            [
+                'participants_updated' => true,
+                'owner_user_id' => (int) $targetParticipant->user_id,
+            ],
+            $recipientIds
+        ))->toOthers();
+
+        return response()->json([
+            'message' => 'Ownership transferred successfully.',
+            'conversation' => $conversation->fresh(['participants.user']),
+        ]);
+    }
+
+    public function leave(
+        Request $request,
+        Conversation $conversation,
+        ConversationAccessService $accessService
+    ): JsonResponse {
+        $participant = $accessService->requireAcceptedParticipant($conversation, $request->user());
+
+        if ($conversation->type !== 'group') {
+            throw ValidationException::withMessages([
+                'conversation' => ['Only group conversations can be left.'],
+            ]);
+        }
+
+        $successorUserId = null;
+
+        DB::transaction(function () use ($conversation, $participant, &$successorUserId): void {
+            if ($participant->role === 'owner') {
+                $successor = $conversation->participants()
+                    ->where('user_id', '!=', $participant->user_id)
+                    ->whereNull('hidden_at')
+                    ->where('participant_state', 'accepted')
+                    ->orderBy('accepted_at')
+                    ->orderBy('id')
+                    ->lockForUpdate()
+                    ->first();
+
+                if ($successor) {
+                    $successor->update([
+                        'role' => 'owner',
+                    ]);
+                    $successorUserId = (int) $successor->user_id;
+                }
+            }
+
+            $participant->update([
+                'role' => 'member',
+                'participant_state' => 'declined',
+                'declined_at' => now(),
+                'hidden_at' => now(),
+                'archived_at' => null,
+                'unread_count' => 0,
+            ]);
+        });
+
+        $recipientIds = $accessService->visibleRecipientIds($conversation, (int) $request->user()->id);
+        broadcast(new ConversationUpdated(
+            (int) $conversation->id,
+            [
+                'participants_updated' => true,
+                'owner_user_id' => $successorUserId,
+            ],
+            $recipientIds
+        ))->toOthers();
+
+        return response()->json([
+            'message' => 'Left group successfully.',
+            'conversation_id' => $conversation->id,
+            'owner_user_id' => $successorUserId,
+        ]);
+    }
+
     public function respondToRequest(
         ConversationRequestActionRequest $request,
         Conversation $conversation,
@@ -524,6 +726,40 @@ class ConversationController extends Controller
         return response()->json([
             'message' => 'Conversation unarchived successfully.',
             'conversation_id' => $conversation->id,
+        ]);
+    }
+
+    public function mute(Request $request, Conversation $conversation, ConversationAccessService $accessService): JsonResponse
+    {
+        $validated = $request->validate([
+            'muted_until' => 'nullable|date|after:now',
+        ]);
+
+        $participant = $accessService->requireVisibleParticipant($conversation, $request->user());
+        $mutedUntil = isset($validated['muted_until'])
+            ? Carbon::parse((string) $validated['muted_until'])
+            : now()->addHours(8);
+
+        $participant->update([
+            'muted_until' => $mutedUntil,
+        ]);
+
+        return response()->json([
+            'message' => 'Conversation muted successfully.',
+            'conversation_id' => $conversation->id,
+            'muted_until' => $mutedUntil->toISOString(),
+        ]);
+    }
+
+    public function unmute(Request $request, Conversation $conversation, ConversationAccessService $accessService): JsonResponse
+    {
+        $participant = $accessService->requireVisibleParticipant($conversation, $request->user());
+        $participant->update(['muted_until' => null]);
+
+        return response()->json([
+            'message' => 'Conversation unmuted successfully.',
+            'conversation_id' => $conversation->id,
+            'muted_until' => null,
         ]);
     }
 

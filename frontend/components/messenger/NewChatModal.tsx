@@ -14,8 +14,10 @@ interface NewChatModalProps {
   presenceByUserId: Record<number, { isOnline: boolean; lastSeenAt: string | null }>;
   selectedUserIds: Set<number>;
   searchValue: string;
+  groupNameValue: string;
   onClose: () => void;
   onSearchChange: (value: string) => void;
+  onGroupNameChange: (value: string) => void;
   onToggleUser: (userId: number) => void;
   onSubmit: () => void;
 }
@@ -30,8 +32,10 @@ export default function NewChatModal({
   presenceByUserId,
   selectedUserIds,
   searchValue,
+  groupNameValue,
   onClose,
   onSearchChange,
+  onGroupNameChange,
   onToggleUser,
   onSubmit,
 }: NewChatModalProps) {
@@ -63,6 +67,22 @@ export default function NewChatModal({
           className="mt-1.5 h-10 w-full rounded-md border border-slate-300 px-3 text-sm text-slate-900 shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
           disabled={isCreating || isLoading}
         />
+
+        {selectedCount > 1 && (
+          <>
+            <label className="mt-4 block text-sm font-medium text-slate-700">Group name</label>
+            <input
+              type="text"
+              value={groupNameValue}
+              onChange={(event) => onGroupNameChange(event.target.value)}
+              placeholder="Enter a group name"
+              className="mt-1.5 h-10 w-full rounded-md border border-slate-300 px-3 text-sm text-slate-900 shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+              disabled={isCreating}
+              maxLength={255}
+            />
+            <p className="mt-1 text-xs text-slate-500">Optional. Leave empty to use the default generated name.</p>
+          </>
+        )}
 
         <div className="mt-4 max-h-64 space-y-2 overflow-y-auto pr-1">
           {isLoading ? (

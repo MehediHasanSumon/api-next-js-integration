@@ -11,10 +11,10 @@ import {
   type ConversationListItem,
   type DirectoryUser,
 } from "@/lib/chat-api";
-import type { ThreadItem } from "@/lib/chat-threads";
+import { mapConversationToThread, type ThreadItem } from "@/lib/chat-threads";
 import { getPresenceStatus } from "@/lib/presence-api";
 
-export type ThreadFilter = "inbox" | "unread" | "online";
+export type ThreadFilter = "inbox" | "unread" | "online" | "requests" | "archived" | "all";
 
 export interface NewChatModalState {
   isOpen: boolean;
@@ -25,8 +25,10 @@ export interface NewChatModalState {
   users: DirectoryUser[];
   selectedUserIds: Set<number>;
   searchValue: string;
+  groupNameValue: string;
   onClose: () => void;
   onSearchChange: (value: string) => void;
+  onGroupNameChange: (value: string) => void;
   onToggleUser: (userId: number) => void;
   onSubmit: () => void;
 }
@@ -105,6 +107,7 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
   const [chatUsersError, setChatUsersError] = useState<string | null>(null);
   const [chatUsersLoading, setChatUsersLoading] = useState(false);
   const [chatUserSearch, setChatUserSearch] = useState("");
+  const [groupName, setGroupName] = useState("");
   const [selectedUserIds, setSelectedUserIds] = useState<number[]>([]);
   const [conversationDirectory, setConversationDirectory] = useState<ConversationListItem[]>([]);
   const [presenceByUserId, setPresenceByUserId] = useState<Record<number, { isOnline: boolean; lastSeenAt: string | null }>>({});
@@ -139,11 +142,19 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
   }, [refreshThreads, threads.length]);
 
   const unreadCount = useMemo(() => threads.reduce((sum, thread) => sum + thread.unread, 0), [threads]);
+  const directoryThreads = useMemo(
+    () => conversationDirectory.map(mapConversationToThread),
+    [conversationDirectory]
+  );
 
   const filteredThreads = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
+    const sourceThreads =
+      filter === "requests" || filter === "archived" || filter === "all"
+        ? directoryThreads
+        : threads;
 
-    return threads.filter((thread) => {
+    return sourceThreads.filter((thread) => {
       const matchQuery =
         query === "" ||
         thread.name.toLowerCase().includes(query) ||
@@ -170,9 +181,21 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
         return Boolean(presenceByUserId[thread.counterpartId]?.isOnline);
       }
 
+      if (filter === "requests") {
+        return thread.participantState === "pending";
+      }
+
+      if (filter === "archived") {
+        return thread.archivedAt !== null;
+      }
+
+      if (filter === "all") {
+        return true;
+      }
+
       return true;
     });
-  }, [filter, presenceByUserId, searchQuery, threads]);
+  }, [directoryThreads, filter, presenceByUserId, searchQuery, threads]);
 
   const acceptedDirectCounterpartIds = useMemo(() => {
     const ids = threads
@@ -289,6 +312,7 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
     setNewChatError(null);
     setSelectedUserIds([]);
     setChatUserSearch("");
+    setGroupName("");
   }, []);
 
   const closeNewChatModal = useCallback(() => {
@@ -296,6 +320,7 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
     setNewChatError(null);
     setSelectedUserIds([]);
     setChatUserSearch("");
+    setGroupName("");
   }, []);
 
   const findDirectConversationId = useCallback(
@@ -332,7 +357,10 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
       const response =
         selectedUserIds.length === 1
           ? await startConversation({ recipient_user_id: selectedUserIds[0] })
-          : await startConversation({ participant_ids: selectedUserIds });
+          : await startConversation({
+              participant_ids: selectedUserIds,
+              title: groupName.trim() || undefined,
+            });
       closeNewChatModal();
       await refreshThreads();
       router.push(`/message/t/${response.conversation_id}`);
@@ -346,6 +374,7 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
   }, [
     closeNewChatModal,
     findDirectConversationId,
+    groupName,
     refreshThreads,
     router,
     selectedUserIds,
@@ -528,8 +557,10 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
     users: filteredChatUsers,
     selectedUserIds: selectedUserIdsSet,
     searchValue: chatUserSearch,
+    groupNameValue: groupName,
     onClose: closeNewChatModal,
     onSearchChange: setChatUserSearch,
+    onGroupNameChange: setGroupName,
     onToggleUser: toggleUserSelection,
     onSubmit: handleStartConversation,
   };

@@ -7,6 +7,7 @@ import type {
   ConversationActionResponse,
   ConversationId,
   ConversationListItem,
+  ConversationMuteResponse,
   ConversationParticipant,
   ConversationRequestResponse,
   ConversationShowResponse,
@@ -48,6 +49,7 @@ export type {
   ConversationFilter,
   ConversationId,
   ConversationListItem,
+  ConversationMuteResponse,
   ConversationParticipant,
   ConversationRequestResponse,
   ConversationShowResponse,
@@ -417,6 +419,7 @@ const normalizeConversationShowResponse = (value: ConversationShowResponse): Con
     participant: {
       participant_state: (toNullableString(value.participant?.participant_state) as ParticipantState) ?? "accepted",
       archived_at: toNullableString(value.participant?.archived_at),
+      muted_until: toNullableString(value.participant?.muted_until),
       unread_count: toNumber(value.participant?.unread_count),
       last_read_message_id: value.participant?.last_read_message_id ?? null,
       last_read_at: toNullableString(value.participant?.last_read_at),
@@ -649,12 +652,78 @@ export const unarchiveConversation = async (
   return data;
 };
 
+export const muteConversation = async (
+  conversationId: ConversationId,
+  payload: { muted_until: string }
+): Promise<ConversationMuteResponse> => {
+  const { data } = await api.post<ConversationMuteResponse>(`${conversationPath(conversationId)}/mute`, payload);
+  return data;
+};
+
+export const unmuteConversation = async (
+  conversationId: ConversationId
+): Promise<ConversationMuteResponse> => {
+  const { data } = await api.delete<ConversationMuteResponse>(`${conversationPath(conversationId)}/mute`);
+  return data;
+};
+
 export const updateConversation = async (
   conversationId: ConversationId,
-  payload: { title: string }
+  payload: { title?: string; description?: string | null; avatar?: File | null }
 ): Promise<{ message: string; conversation: Conversation }> => {
-  const { data } = await api.patch<{ message: string; conversation: Conversation }>(conversationPath(conversationId), payload);
-  return data;
+  const hasAvatar = payload.avatar instanceof File;
+
+  if (hasAvatar) {
+    const formData = new FormData();
+    const avatarFile = payload.avatar;
+
+    if (payload.title !== undefined) {
+      formData.append("title", payload.title);
+    }
+
+    if (payload.description !== undefined) {
+      formData.append("description", payload.description ?? "");
+    }
+
+    if (avatarFile) {
+      formData.append("avatar", avatarFile);
+    }
+
+    const { data } = await api.patch<{ message: string; conversation: Conversation }>(
+      conversationPath(conversationId),
+      formData,
+      {
+        headers: {
+          "Content-Type": "multipart/form-data",
+        },
+      }
+    );
+
+    return {
+      ...data,
+      conversation: normalizeConversation(data.conversation) ?? data.conversation,
+    };
+  }
+
+  const requestPayload: { title?: string; description?: string | null } = {};
+
+  if (payload.title !== undefined) {
+    requestPayload.title = payload.title;
+  }
+
+  if (payload.description !== undefined) {
+    requestPayload.description = payload.description;
+  }
+
+  const { data } = await api.patch<{ message: string; conversation: Conversation }>(
+    conversationPath(conversationId),
+    requestPayload
+  );
+
+  return {
+    ...data,
+    conversation: normalizeConversation(data.conversation) ?? data.conversation,
+  };
 };
 
 export const addConversationParticipants = async (
@@ -678,6 +747,31 @@ export const removeConversationParticipant = async (
   return data;
 };
 
+export const leaveConversation = async (
+  conversationId: ConversationId
+): Promise<{ message: string; conversation_id: ConversationId; owner_user_id?: number | null }> => {
+  const { data } = await api.delete<{ message: string; conversation_id: ConversationId; owner_user_id?: number | null }>(
+    `${conversationPath(conversationId)}/leave`
+  );
+  return data;
+};
+
+export const updateConversationParticipantRole = async (
+  conversationId: ConversationId,
+  userId: number,
+  payload: { role: "owner" }
+): Promise<{ message: string; conversation: Conversation }> => {
+  const { data } = await api.patch<{ message: string; conversation: Conversation }>(
+    `${conversationPath(conversationId)}/participants/${userId}`,
+    payload
+  );
+
+  return {
+    ...data,
+    conversation: normalizeConversation(data.conversation) ?? data.conversation,
+  };
+};
+
 const chatApi = {
   startConversation,
   listConversations,
@@ -697,6 +791,10 @@ const chatApi = {
   updateTyping,
   archiveConversation,
   unarchiveConversation,
+  muteConversation,
+  unmuteConversation,
+  leaveConversation,
+  updateConversationParticipantRole,
 };
 
 export default chatApi;

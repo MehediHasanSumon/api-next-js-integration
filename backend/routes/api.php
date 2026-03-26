@@ -51,10 +51,14 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/conversations/{conversation}', [ConversationController::class, 'show']);
         Route::patch('/conversations/{conversation}', [ConversationController::class, 'update']);
         Route::post('/conversations/{conversation}/participants', [ConversationController::class, 'addParticipants']);
+        Route::patch('/conversations/{conversation}/participants/{user}', [ConversationController::class, 'updateParticipantRole']);
         Route::delete('/conversations/{conversation}/participants/{user}', [ConversationController::class, 'removeParticipant']);
+        Route::delete('/conversations/{conversation}/leave', [ConversationController::class, 'leave']);
         Route::post('/conversations/{conversation}/request/respond', [ConversationController::class, 'respondToRequest']);
         Route::post('/conversations/{conversation}/archive', [ConversationController::class, 'archive']);
         Route::delete('/conversations/{conversation}/archive', [ConversationController::class, 'unarchive']);
+        Route::post('/conversations/{conversation}/mute', [ConversationController::class, 'mute']);
+        Route::delete('/conversations/{conversation}/mute', [ConversationController::class, 'unmute']);
 
         Route::get('/conversations/{conversation}/messages', [MessageController::class, 'index']);
         Route::post('/conversations/{conversation}/messages', [MessageController::class, 'store']);
