@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import Button from "@/components/Button";
 import MessengerSidebar from "@/components/messenger/MessengerSidebar";
@@ -41,6 +42,27 @@ export default function MessengerThreadsSidebar({
   newChatModalState,
   activeThreadId,
 }: MessengerThreadsSidebarProps) {
+  const [moreFiltersOpen, setMoreFiltersOpen] = useState(false);
+  const moreFiltersRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!moreFiltersRef.current?.contains(event.target as Node)) {
+        setMoreFiltersOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+    };
+  }, []);
+
+  const selectMoreFilter = (nextFilter: Extract<ThreadFilter, "requests" | "archived" | "all">) => {
+    onFilterChange(nextFilter);
+    setMoreFiltersOpen(false);
+  };
+
   return (
     <>
       <MessengerSidebar
@@ -61,7 +83,7 @@ export default function MessengerThreadsSidebar({
         searchValue={searchQuery}
         onSearchChange={onSearchChange}
         filters={
-          <div className="grid grid-cols-3 gap-1">
+          <div className="grid grid-cols-[1fr_1fr_1fr_auto] gap-1">
             <Button
               type="button"
               variant={filter === "inbox" ? "secondary" : "ghost"}
@@ -89,6 +111,50 @@ export default function MessengerThreadsSidebar({
             >
               Online
             </Button>
+            <div ref={moreFiltersRef} className="relative">
+              <Button
+                type="button"
+                variant={filter === "requests" || filter === "archived" || filter === "all" ? "secondary" : "ghost"}
+                size="sm"
+                className="h-8 min-w-8 rounded-full px-2 text-xs"
+                onClick={() => setMoreFiltersOpen((previous) => !previous)}
+                aria-label="Open more conversation filters"
+              >
+                ...
+              </Button>
+
+              {moreFiltersOpen && (
+                <div className="absolute right-0 top-10 z-20 min-w-[148px] rounded-2xl border border-slate-200 bg-white p-1.5 shadow-xl">
+                  <button
+                    type="button"
+                    className={`flex w-full rounded-xl px-3 py-2 text-left text-xs font-medium ${
+                      filter === "requests" ? "bg-slate-100 text-slate-900" : "text-slate-600 hover:bg-slate-50"
+                    }`}
+                    onClick={() => selectMoreFilter("requests")}
+                  >
+                    Requests
+                  </button>
+                  <button
+                    type="button"
+                    className={`flex w-full rounded-xl px-3 py-2 text-left text-xs font-medium ${
+                      filter === "archived" ? "bg-slate-100 text-slate-900" : "text-slate-600 hover:bg-slate-50"
+                    }`}
+                    onClick={() => selectMoreFilter("archived")}
+                  >
+                    Archived
+                  </button>
+                  <button
+                    type="button"
+                    className={`flex w-full rounded-xl px-3 py-2 text-left text-xs font-medium ${
+                      filter === "all" ? "bg-slate-100 text-slate-900" : "text-slate-600 hover:bg-slate-50"
+                    }`}
+                    onClick={() => selectMoreFilter("all")}
+                  >
+                    All
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         }
       >

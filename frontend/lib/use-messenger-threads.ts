@@ -11,10 +11,10 @@ import {
   type ConversationListItem,
   type DirectoryUser,
 } from "@/lib/chat-api";
-import type { ThreadItem } from "@/lib/chat-threads";
+import { mapConversationToThread, type ThreadItem } from "@/lib/chat-threads";
 import { getPresenceStatus } from "@/lib/presence-api";
 
-export type ThreadFilter = "inbox" | "unread" | "online";
+export type ThreadFilter = "inbox" | "unread" | "online" | "requests" | "archived" | "all";
 
 export interface NewChatModalState {
   isOpen: boolean;
@@ -142,11 +142,19 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
   }, [refreshThreads, threads.length]);
 
   const unreadCount = useMemo(() => threads.reduce((sum, thread) => sum + thread.unread, 0), [threads]);
+  const directoryThreads = useMemo(
+    () => conversationDirectory.map(mapConversationToThread),
+    [conversationDirectory]
+  );
 
   const filteredThreads = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
+    const sourceThreads =
+      filter === "requests" || filter === "archived" || filter === "all"
+        ? directoryThreads
+        : threads;
 
-    return threads.filter((thread) => {
+    return sourceThreads.filter((thread) => {
       const matchQuery =
         query === "" ||
         thread.name.toLowerCase().includes(query) ||
@@ -173,9 +181,21 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
         return Boolean(presenceByUserId[thread.counterpartId]?.isOnline);
       }
 
+      if (filter === "requests") {
+        return thread.participantState === "pending";
+      }
+
+      if (filter === "archived") {
+        return thread.archivedAt !== null;
+      }
+
+      if (filter === "all") {
+        return true;
+      }
+
       return true;
     });
-  }, [filter, presenceByUserId, searchQuery, threads]);
+  }, [directoryThreads, filter, presenceByUserId, searchQuery, threads]);
 
   const acceptedDirectCounterpartIds = useMemo(() => {
     const ids = threads

@@ -535,6 +535,137 @@ class ConversationController extends Controller
         ]);
     }
 
+    public function updateParticipantRole(
+        Request $request,
+        Conversation $conversation,
+        User $user,
+        ConversationAccessService $accessService
+    ): JsonResponse {
+        $participant = $accessService->requireAcceptedParticipant($conversation, $request->user());
+
+        if ($conversation->type !== 'group') {
+            throw ValidationException::withMessages([
+                'conversation' => ['Only group conversations can be updated.'],
+            ]);
+        }
+
+        if ($participant->role !== 'owner') {
+            throw ValidationException::withMessages([
+                'conversation' => ['Only group owners can update member roles.'],
+            ]);
+        }
+
+        $validated = $request->validate([
+            'role' => 'required|string|in:owner',
+        ]);
+
+        if ((int) $user->id === (int) $request->user()->id) {
+            throw ValidationException::withMessages([
+                'participant' => ['Select another member to transfer ownership.'],
+            ]);
+        }
+
+        $targetParticipant = $conversation->participants()
+            ->where('user_id', $user->id)
+            ->whereNull('hidden_at')
+            ->where('participant_state', 'accepted')
+            ->first();
+
+        if (!$targetParticipant) {
+            throw ValidationException::withMessages([
+                'participant' => ['User must be an active group member.'],
+            ]);
+        }
+
+        if ($validated['role'] === 'owner' && $targetParticipant->role !== 'owner') {
+            DB::transaction(function () use ($participant, $targetParticipant): void {
+                $participant->update([
+                    'role' => 'member',
+                ]);
+
+                $targetParticipant->update([
+                    'role' => 'owner',
+                ]);
+            });
+        }
+
+        $recipientIds = $accessService->visibleRecipientIds($conversation, (int) $request->user()->id);
+        broadcast(new ConversationUpdated(
+            (int) $conversation->id,
+            [
+                'participants_updated' => true,
+                'owner_user_id' => (int) $targetParticipant->user_id,
+            ],
+            $recipientIds
+        ))->toOthers();
+
+        return response()->json([
+            'message' => 'Ownership transferred successfully.',
+            'conversation' => $conversation->fresh(['participants.user']),
+        ]);
+    }
+
+    public function leave(
+        Request $request,
+        Conversation $conversation,
+        ConversationAccessService $accessService
+    ): JsonResponse {
+        $participant = $accessService->requireAcceptedParticipant($conversation, $request->user());
+
+        if ($conversation->type !== 'group') {
+            throw ValidationException::withMessages([
+                'conversation' => ['Only group conversations can be left.'],
+            ]);
+        }
+
+        $successorUserId = null;
+
+        DB::transaction(function () use ($conversation, $participant, &$successorUserId): void {
+            if ($participant->role === 'owner') {
+                $successor = $conversation->participants()
+                    ->where('user_id', '!=', $participant->user_id)
+                    ->whereNull('hidden_at')
+                    ->where('participant_state', 'accepted')
+                    ->orderBy('accepted_at')
+                    ->orderBy('id')
+                    ->lockForUpdate()
+                    ->first();
+
+                if ($successor) {
+                    $successor->update([
+                        'role' => 'owner',
+                    ]);
+                    $successorUserId = (int) $successor->user_id;
+                }
+            }
+
+            $participant->update([
+                'role' => 'member',
+                'participant_state' => 'declined',
+                'declined_at' => now(),
+                'hidden_at' => now(),
+                'archived_at' => null,
+                'unread_count' => 0,
+            ]);
+        });
+
+        $recipientIds = $accessService->visibleRecipientIds($conversation, (int) $request->user()->id);
+        broadcast(new ConversationUpdated(
+            (int) $conversation->id,
+            [
+                'participants_updated' => true,
+                'owner_user_id' => $successorUserId,
+            ],
+            $recipientIds
+        ))->toOthers();
+
+        return response()->json([
+            'message' => 'Left group successfully.',
+            'conversation_id' => $conversation->id,
+            'owner_user_id' => $successorUserId,
+        ]);
+    }
+
     public function respondToRequest(
         ConversationRequestActionRequest $request,
         Conversation $conversation,

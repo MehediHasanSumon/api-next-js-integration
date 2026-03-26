@@ -747,6 +747,31 @@ export const removeConversationParticipant = async (
   return data;
 };
 
+export const leaveConversation = async (
+  conversationId: ConversationId
+): Promise<{ message: string; conversation_id: ConversationId; owner_user_id?: number | null }> => {
+  const { data } = await api.delete<{ message: string; conversation_id: ConversationId; owner_user_id?: number | null }>(
+    `${conversationPath(conversationId)}/leave`
+  );
+  return data;
+};
+
+export const updateConversationParticipantRole = async (
+  conversationId: ConversationId,
+  userId: number,
+  payload: { role: "owner" }
+): Promise<{ message: string; conversation: Conversation }> => {
+  const { data } = await api.patch<{ message: string; conversation: Conversation }>(
+    `${conversationPath(conversationId)}/participants/${userId}`,
+    payload
+  );
+
+  return {
+    ...data,
+    conversation: normalizeConversation(data.conversation) ?? data.conversation,
+  };
+};
+
 const chatApi = {
   startConversation,
   listConversations,
@@ -768,6 +793,8 @@ const chatApi = {
   unarchiveConversation,
   muteConversation,
   unmuteConversation,
+  leaveConversation,
+  updateConversationParticipantRole,
 };
 
 export default chatApi;

@@ -20,6 +20,7 @@ import {
   archiveConversation,
   addConversationParticipants,
   forwardMessage,
+  leaveConversation,
   listChatUsers,
   listConversations,
   listMessages,
@@ -31,6 +32,7 @@ import {
   respondToConversationRequest,
   sendMessage,
   updateConversation,
+  updateConversationParticipantRole,
   updateMessage,
   uploadChatAttachment,
   showConversation,
@@ -431,18 +433,28 @@ const MUTE_PRESETS = [
 
 const mapConversationDetailToThread = (
   conversation: Conversation,
-  participant: ConversationShowResponse["participant"] | null
+  participant: ConversationShowResponse["participant"] | null,
+  currentUserId: number | null
 ): ThreadItem => {
+  const participants = conversation.participants ?? [];
+  const counterpart =
+    conversation.type === "direct" && currentUserId !== null
+      ? participants.find((item) => item.user && Number(item.user_id) !== Number(currentUserId))?.user ?? null
+      : null;
+  const counterpartName = counterpart?.name?.trim();
+  const counterpartEmail = counterpart?.email;
+
   return {
     id: String(conversation.id),
-    name: conversation.title?.trim() || `Conversation #${conversation.id}`,
-    handle: `#${conversation.id}`,
+    name: conversation.title?.trim() || counterpartName || `Conversation #${conversation.id}`,
+    handle: counterpartEmail ? `@${counterpartEmail.split("@")[0]}` : `#${conversation.id}`,
     lastMessage:
       conversation.last_message?.body?.trim() ||
       (conversation.last_message ? `[${conversation.last_message.message_type}]` : "No messages yet"),
     lastTime: formatThreadRelativeTime(conversation.last_message?.created_at ?? conversation.last_message_at),
     unread: participant?.unread_count ?? 0,
     participantState: participant?.participant_state ?? "accepted",
+    archivedAt: participant?.archived_at ?? null,
     type: conversation.type ?? null,
     counterpartId: null,
   };
@@ -589,6 +601,9 @@ export default function MessageThreadPage() {
   const [memberSelection, setMemberSelection] = useState<Set<number>>(new Set());
   const [memberSaving, setMemberSaving] = useState(false);
   const [memberActionError, setMemberActionError] = useState<string | null>(null);
+  const [memberRoleUpdatingId, setMemberRoleUpdatingId] = useState<number | null>(null);
+  const [leaveGroupLoading, setLeaveGroupLoading] = useState(false);
+  const [leaveGroupError, setLeaveGroupError] = useState<string | null>(null);
   const [reactionModalMessage, setReactionModalMessage] = useState<Message | null>(null);
   const [reactionPopoverPosition, setReactionPopoverPosition] = useState<{ top: number; left: number } | null>(null);
   const [reactionMutationLoadingKey, setReactionMutationLoadingKey] = useState<string | null>(null);
@@ -679,11 +694,14 @@ export default function MessageThreadPage() {
     setArchiveActionLoading(false);
     setEchoConnectionStatus("connecting");
     setMessageActionError(null);
+    setLeaveGroupLoading(false);
+    setLeaveGroupError(null);
     setGroupDescriptionEditing(false);
     setGroupDescriptionSaving(false);
     setGroupDescriptionError(null);
     setGroupAvatarSaving(false);
     setGroupAvatarError(null);
+    setMemberRoleUpdatingId(null);
     setReactionModalMessage(null);
     setReactionMutationLoadingKey(null);
     setForwardModalMessage(null);
@@ -765,11 +783,11 @@ export default function MessageThreadPage() {
     }
 
     if (conversationData?.conversation) {
-      return mapConversationDetailToThread(conversationData.conversation, conversationData.participant);
+      return mapConversationDetailToThread(conversationData.conversation, conversationData.participant, currentUserId);
     }
 
     return null;
-  }, [conversationData, threadId, threads]);
+  }, [conversationData, currentUserId, threadId, threads]);
 
   const conversation = conversationData?.conversation ?? null;
   const participant = conversationData?.participant ?? null;
@@ -2184,6 +2202,10 @@ export default function MessageThreadPage() {
       });
 
       await refreshThreads();
+
+      if (shouldArchive) {
+        router.push("/masseges");
+      }
     } catch {
       setArchiveActionError("Failed to update archive status.");
     } finally {
@@ -2504,6 +2526,48 @@ export default function MessageThreadPage() {
       const axiosError = error as AxiosError<ApiValidationErrorPayload>;
       const firstError = Object.values(axiosError.response?.data?.errors ?? {})[0]?.[0];
       setMemberActionError(firstError || axiosError.response?.data?.message || "Failed to remove member.");
+    }
+  };
+
+  const handleTransferOwnership = async (userId: number) => {
+    if (!threadId || !isGroupConversation || !canEditGroupMembers) {
+      return;
+    }
+
+    setMemberActionError(null);
+    setMemberRoleUpdatingId(userId);
+
+    try {
+      await updateConversationParticipantRole(threadId, userId, { role: "owner" });
+      await refreshConversation();
+      await refreshThreads();
+    } catch (error) {
+      const axiosError = error as AxiosError<ApiValidationErrorPayload>;
+      const firstError = Object.values(axiosError.response?.data?.errors ?? {})[0]?.[0];
+      setMemberActionError(firstError || axiosError.response?.data?.message || "Failed to transfer ownership.");
+    } finally {
+      setMemberRoleUpdatingId(null);
+    }
+  };
+
+  const handleLeaveGroup = async () => {
+    if (!threadId || !isGroupConversation || participant?.participant_state !== "accepted") {
+      return;
+    }
+
+    setLeaveGroupError(null);
+    setLeaveGroupLoading(true);
+
+    try {
+      await leaveConversation(threadId);
+      await refreshThreads();
+      router.push("/masseges");
+    } catch (error) {
+      const axiosError = error as AxiosError<ApiValidationErrorPayload>;
+      const firstError = Object.values(axiosError.response?.data?.errors ?? {})[0]?.[0];
+      setLeaveGroupError(firstError || axiosError.response?.data?.message || "Failed to leave group.");
+    } finally {
+      setLeaveGroupLoading(false);
     }
   };
 
@@ -3677,7 +3741,10 @@ export default function MessageThreadPage() {
                       const isOwner = member.role === "owner";
                       const showRemove =
                         canEditGroupMembers && !isOwner && Number(member.id) !== Number(currentUserId);
+                      const showTransferOwnership =
+                        canEditGroupMembers && !isOwner && Number(member.id) !== Number(currentUserId);
                       const isOnline = Boolean(presenceByUserId[member.id]?.isOnline);
+                      const isTransferringOwnership = memberRoleUpdatingId === member.id;
 
                       return (
                         <div
@@ -3691,14 +3758,29 @@ export default function MessageThreadPage() {
                               <p className="text-[11px] text-slate-500">{isOwner ? "Owner" : "Member"}</p>
                             </div>
                           </div>
-                          {showRemove ? (
-                            <button
-                              type="button"
-                              className="text-xs font-semibold text-rose-600 hover:text-rose-700"
-                              onClick={() => void handleRemoveMember(member.id)}
-                            >
-                              Remove
-                            </button>
+                          {(showTransferOwnership || showRemove) ? (
+                            <div className="flex items-center gap-2">
+                              {showTransferOwnership ? (
+                                <button
+                                  type="button"
+                                  className="text-xs font-semibold text-blue-600 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                                  onClick={() => void handleTransferOwnership(member.id)}
+                                  disabled={Boolean(memberRoleUpdatingId)}
+                                >
+                                  {isTransferringOwnership ? "Saving..." : "Make owner"}
+                                </button>
+                              ) : null}
+                              {showRemove ? (
+                                <button
+                                  type="button"
+                                  className="text-xs font-semibold text-rose-600 hover:text-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
+                                  onClick={() => void handleRemoveMember(member.id)}
+                                  disabled={Boolean(memberRoleUpdatingId)}
+                                >
+                                  Remove
+                                </button>
+                              ) : null}
+                            </div>
                           ) : null}
                         </div>
                       );
@@ -3817,6 +3899,20 @@ export default function MessageThreadPage() {
                     Muted until {formatMuteUntil(participant.muted_until)}
                   </p>
                 ) : null}
+                {isGroupConversation && participant?.participant_state === "accepted" ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    fullWidth
+                    className="justify-start border-0 text-xs font-medium text-rose-600 shadow-none hover:bg-rose-50"
+                    onClick={() => void handleLeaveGroup()}
+                    disabled={leaveGroupLoading}
+                  >
+                    {leaveGroupLoading ? "Leaving..." : "Leave group"}
+                  </Button>
+                ) : null}
+                {leaveGroupError ? <p className="px-3 pt-1 text-[11px] text-rose-600">{leaveGroupError}</p> : null}
                 <Button type="button" variant="ghost" size="sm" fullWidth className="justify-start border-0 text-xs font-medium text-rose-600 shadow-none hover:bg-rose-50">
                   Block / Report
                 </Button>

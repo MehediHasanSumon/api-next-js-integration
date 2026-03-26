@@ -1107,3 +1107,150 @@ test('group conversation show only returns visible accepted members', function (
     expect($participantIds)->not->toContain((int) $removedMember->id);
 });
 
+test('group member can leave group and become hidden', function () {
+    $owner = User::factory()->create();
+    $member = User::factory()->create();
+
+    $conversation = Conversation::query()->create([
+        'type' => 'group',
+        'created_by' => $owner->id,
+        'title' => 'Leave Group',
+    ]);
+
+    $conversation->participants()->create([
+        'user_id' => $owner->id,
+        'role' => 'owner',
+        'participant_state' => 'accepted',
+        'accepted_at' => now(),
+    ]);
+
+    $conversation->participants()->create([
+        'user_id' => $member->id,
+        'role' => 'member',
+        'participant_state' => 'accepted',
+        'accepted_at' => now(),
+    ]);
+
+    actingAs($member)
+        ->deleteJson("/api/chat/conversations/{$conversation->id}/leave")
+        ->assertOk()
+        ->assertJsonPath('conversation_id', $conversation->id);
+
+    $participant = $conversation->participants()->where('user_id', $member->id)->firstOrFail();
+    expect($participant->participant_state)->toBe('declined');
+    expect($participant->hidden_at)->not->toBeNull();
+});
+
+test('group owner can leave and ownership transfers to another accepted member', function () {
+    $owner = User::factory()->create();
+    $member = User::factory()->create();
+
+    $conversation = Conversation::query()->create([
+        'type' => 'group',
+        'created_by' => $owner->id,
+        'title' => 'Owner Leave Group',
+    ]);
+
+    $conversation->participants()->create([
+        'user_id' => $owner->id,
+        'role' => 'owner',
+        'participant_state' => 'accepted',
+        'accepted_at' => now(),
+    ]);
+
+    $conversation->participants()->create([
+        'user_id' => $member->id,
+        'role' => 'member',
+        'participant_state' => 'accepted',
+        'accepted_at' => now()->addSecond(),
+    ]);
+
+    actingAs($owner)
+        ->deleteJson("/api/chat/conversations/{$conversation->id}/leave")
+        ->assertOk()
+        ->assertJsonPath('owner_user_id', $member->id);
+
+    $ownerParticipant = $conversation->participants()->where('user_id', $owner->id)->firstOrFail();
+    $memberParticipant = $conversation->participants()->where('user_id', $member->id)->firstOrFail();
+
+    expect($ownerParticipant->hidden_at)->not->toBeNull();
+    expect($memberParticipant->role)->toBe('owner');
+});
+
+test('group owner can transfer ownership to another accepted member', function () {
+    $owner = User::factory()->create();
+    $member = User::factory()->create();
+
+    $conversation = Conversation::query()->create([
+        'type' => 'group',
+        'created_by' => $owner->id,
+        'title' => 'Ownership Transfer',
+    ]);
+
+    $conversation->participants()->create([
+        'user_id' => $owner->id,
+        'role' => 'owner',
+        'participant_state' => 'accepted',
+        'accepted_at' => now(),
+    ]);
+
+    $conversation->participants()->create([
+        'user_id' => $member->id,
+        'role' => 'member',
+        'participant_state' => 'accepted',
+        'accepted_at' => now(),
+    ]);
+
+    actingAs($owner)
+        ->patchJson("/api/chat/conversations/{$conversation->id}/participants/{$member->id}", [
+            'role' => 'owner',
+        ])
+        ->assertOk()
+        ->assertJsonPath('conversation.participants.0.user_id', $owner->id);
+
+    $ownerParticipant = $conversation->participants()->where('user_id', $owner->id)->firstOrFail();
+    $memberParticipant = $conversation->participants()->where('user_id', $member->id)->firstOrFail();
+
+    expect($ownerParticipant->role)->toBe('member');
+    expect($memberParticipant->role)->toBe('owner');
+});
+
+test('non-owner cannot transfer group ownership', function () {
+    $owner = User::factory()->create();
+    $member = User::factory()->create();
+    $otherMember = User::factory()->create();
+
+    $conversation = Conversation::query()->create([
+        'type' => 'group',
+        'created_by' => $owner->id,
+        'title' => 'Ownership Guard',
+    ]);
+
+    $conversation->participants()->create([
+        'user_id' => $owner->id,
+        'role' => 'owner',
+        'participant_state' => 'accepted',
+        'accepted_at' => now(),
+    ]);
+
+    $conversation->participants()->create([
+        'user_id' => $member->id,
+        'role' => 'member',
+        'participant_state' => 'accepted',
+        'accepted_at' => now(),
+    ]);
+
+    $conversation->participants()->create([
+        'user_id' => $otherMember->id,
+        'role' => 'member',
+        'participant_state' => 'accepted',
+        'accepted_at' => now(),
+    ]);
+
+    actingAs($member)
+        ->patchJson("/api/chat/conversations/{$conversation->id}/participants/{$otherMember->id}", [
+            'role' => 'owner',
+        ])
+        ->assertStatus(422);
+});
+
