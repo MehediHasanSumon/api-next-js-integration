@@ -1021,3 +1021,89 @@ test('admin can remove message for everyone beyond owner time window', function 
         ->assertJsonPath('data.message.body', 'This message was removed.');
 });
 
+test('group owner can re-add a previously removed participant', function () {
+    $owner = User::factory()->create();
+    $member = User::factory()->create();
+
+    $conversation = Conversation::query()->create([
+        'type' => 'group',
+        'created_by' => $owner->id,
+        'title' => 'Project Group',
+    ]);
+
+    $conversation->participants()->create([
+        'user_id' => $owner->id,
+        'role' => 'owner',
+        'participant_state' => 'accepted',
+        'accepted_at' => now(),
+    ]);
+
+    $conversation->participants()->create([
+        'user_id' => $member->id,
+        'role' => 'member',
+        'participant_state' => 'declined',
+        'accepted_at' => now()->subDay(),
+        'declined_at' => now()->subHour(),
+        'hidden_at' => now()->subHour(),
+    ]);
+
+    actingAs($owner)
+        ->postJson("/api/chat/conversations/{$conversation->id}/participants", [
+            'participant_ids' => [$member->id],
+        ])
+        ->assertOk();
+
+    $participant = $conversation->participants()->where('user_id', $member->id)->firstOrFail();
+
+    expect($participant->participant_state)->toBe('accepted');
+    expect($participant->hidden_at)->toBeNull();
+    expect($participant->declined_at)->toBeNull();
+});
+
+test('group conversation show only returns visible accepted members', function () {
+    $owner = User::factory()->create();
+    $activeMember = User::factory()->create();
+    $removedMember = User::factory()->create();
+
+    $conversation = Conversation::query()->create([
+        'type' => 'group',
+        'created_by' => $owner->id,
+        'title' => 'Visible Members Only',
+    ]);
+
+    $conversation->participants()->create([
+        'user_id' => $owner->id,
+        'role' => 'owner',
+        'participant_state' => 'accepted',
+        'accepted_at' => now(),
+    ]);
+
+    $conversation->participants()->create([
+        'user_id' => $activeMember->id,
+        'role' => 'member',
+        'participant_state' => 'accepted',
+        'accepted_at' => now(),
+    ]);
+
+    $conversation->participants()->create([
+        'user_id' => $removedMember->id,
+        'role' => 'member',
+        'participant_state' => 'declined',
+        'declined_at' => now(),
+        'hidden_at' => now(),
+    ]);
+
+    $response = actingAs($owner)
+        ->getJson("/api/chat/conversations/{$conversation->id}")
+        ->assertOk();
+
+    $participantIds = collect($response->json('conversation.participants'))
+        ->pluck('user_id')
+        ->map(fn ($id) => (int) $id)
+        ->all();
+
+    expect($participantIds)->toContain((int) $owner->id);
+    expect($participantIds)->toContain((int) $activeMember->id);
+    expect($participantIds)->not->toContain((int) $removedMember->id);
+});
+

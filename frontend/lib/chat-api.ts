@@ -669,10 +669,61 @@ export const unmuteConversation = async (
 
 export const updateConversation = async (
   conversationId: ConversationId,
-  payload: { title: string }
+  payload: { title?: string; description?: string | null; avatar?: File | null }
 ): Promise<{ message: string; conversation: Conversation }> => {
-  const { data } = await api.patch<{ message: string; conversation: Conversation }>(conversationPath(conversationId), payload);
-  return data;
+  const hasAvatar = payload.avatar instanceof File;
+
+  if (hasAvatar) {
+    const formData = new FormData();
+    const avatarFile = payload.avatar;
+
+    if (payload.title !== undefined) {
+      formData.append("title", payload.title);
+    }
+
+    if (payload.description !== undefined) {
+      formData.append("description", payload.description ?? "");
+    }
+
+    if (avatarFile) {
+      formData.append("avatar", avatarFile);
+    }
+
+    const { data } = await api.patch<{ message: string; conversation: Conversation }>(
+      conversationPath(conversationId),
+      formData,
+      {
+        headers: {
+          "Content-Type": "multipart/form-data",
+        },
+      }
+    );
+
+    return {
+      ...data,
+      conversation: normalizeConversation(data.conversation) ?? data.conversation,
+    };
+  }
+
+  const requestPayload: { title?: string; description?: string | null } = {};
+
+  if (payload.title !== undefined) {
+    requestPayload.title = payload.title;
+  }
+
+  if (payload.description !== undefined) {
+    requestPayload.description = payload.description;
+  }
+
+  const { data } = await api.patch<{ message: string; conversation: Conversation }>(
+    conversationPath(conversationId),
+    requestPayload
+  );
+
+  return {
+    ...data,
+    conversation: normalizeConversation(data.conversation) ?? data.conversation,
+  };
 };
 
 export const addConversationParticipants = async (

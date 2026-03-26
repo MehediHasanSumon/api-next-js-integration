@@ -173,8 +173,10 @@ export default function MessengerThreadsSidebar({
         presenceByUserId={presenceByUserId}
         selectedUserIds={newChatModalState.selectedUserIds}
         searchValue={newChatModalState.searchValue}
+        groupNameValue={newChatModalState.groupNameValue}
         onClose={newChatModalState.onClose}
         onSearchChange={newChatModalState.onSearchChange}
+        onGroupNameChange={newChatModalState.onGroupNameChange}
         onToggleUser={newChatModalState.onToggleUser}
         onSubmit={newChatModalState.onSubmit}
       />

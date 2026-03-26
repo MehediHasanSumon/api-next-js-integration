@@ -16,6 +16,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
@@ -267,6 +268,13 @@ class ConversationController extends Controller
 
         $conversation->load([
             'creator:id,name,email',
+            'participants' => function ($query) use ($conversation): void {
+                if ($conversation->type === 'group') {
+                    $query
+                        ->whereNull('hidden_at')
+                        ->where('participant_state', 'accepted');
+                }
+            },
             'participants.user:id,name,email,last_seen_at',
         ]);
 
@@ -304,24 +312,59 @@ class ConversationController extends Controller
         }
 
         $validated = $request->validate([
-            'title' => 'required|string|min:1|max:100',
+            'title' => 'sometimes|nullable|string|max:100',
+            'description' => 'sometimes|nullable|string|max:1000',
+            'avatar' => 'sometimes|nullable|image|max:5120',
         ]);
 
-        $title = trim((string) $validated['title']);
-        if ($title === '') {
+        if (!array_key_exists('title', $validated) && !array_key_exists('description', $validated) && !$request->hasFile('avatar')) {
             throw ValidationException::withMessages([
-                'title' => ['Group name is required.'],
+                'conversation' => ['Provide at least one field to update.'],
             ]);
         }
 
-        $conversation->update([
-            'title' => $title,
-        ]);
+        $changes = [];
+        $updates = [];
+
+        if (array_key_exists('title', $validated)) {
+            $title = trim((string) ($validated['title'] ?? ''));
+            if ($title === '') {
+                throw ValidationException::withMessages([
+                    'title' => ['Group name is required.'],
+                ]);
+            }
+
+            $updates['title'] = $title;
+            $changes['title'] = $title;
+        }
+
+        if (array_key_exists('description', $validated)) {
+            $description = $validated['description'];
+            if (is_string($description)) {
+                $description = trim($description);
+            }
+
+            $updates['description'] = $description !== '' ? $description : null;
+            $changes['description'] = $updates['description'];
+        }
+
+        if ($request->hasFile('avatar')) {
+            $newAvatarPath = $request->file('avatar')->store('chat/avatars', 'public');
+
+            if ($conversation->avatar_path && Storage::disk('public')->exists($conversation->avatar_path)) {
+                Storage::disk('public')->delete($conversation->avatar_path);
+            }
+
+            $updates['avatar_path'] = $newAvatarPath;
+            $changes['avatar_path'] = $newAvatarPath;
+        }
+
+        $conversation->update($updates);
 
         $recipientIds = $accessService->visibleRecipientIds($conversation, (int) $request->user()->id);
         broadcast(new ConversationUpdated(
             (int) $conversation->id,
-            ['title' => $title],
+            $changes,
             $recipientIds
         ))->toOthers();
 
@@ -368,18 +411,36 @@ class ConversationController extends Controller
             ]);
         }
 
-        $existingIds = $conversation->participants()->pluck('user_id')->map(fn ($id) => (int) $id)->all();
-        $newIds = array_values(array_diff($incomingIds, $existingIds));
-
-        if ($newIds === []) {
-            return response()->json([
-                'message' => 'No new participants to add.',
-                'conversation' => $conversation->fresh(['participants.user']),
-            ]);
-        }
-
         $now = now();
-        foreach ($newIds as $userId) {
+        $changesApplied = false;
+
+        foreach ($incomingIds as $userId) {
+            $existingParticipant = $conversation->participants()
+                ->where('user_id', $userId)
+                ->first();
+
+            if ($existingParticipant) {
+                $shouldRestoreParticipant = $existingParticipant->hidden_at !== null
+                    || $existingParticipant->participant_state !== 'accepted'
+                    || $existingParticipant->archived_at !== null;
+
+                if (!$shouldRestoreParticipant) {
+                    continue;
+                }
+
+                $existingParticipant->update([
+                    'role' => $existingParticipant->role === 'owner' ? 'owner' : 'member',
+                    'participant_state' => 'accepted',
+                    'accepted_at' => $now,
+                    'declined_at' => null,
+                    'hidden_at' => null,
+                    'archived_at' => null,
+                    'unread_count' => 0,
+                ]);
+                $changesApplied = true;
+                continue;
+            }
+
             $conversation->participants()->create([
                 'user_id' => $userId,
                 'role' => 'member',
@@ -388,6 +449,14 @@ class ConversationController extends Controller
                 'declined_at' => null,
                 'hidden_at' => null,
                 'archived_at' => null,
+            ]);
+            $changesApplied = true;
+        }
+
+        if (!$changesApplied) {
+            return response()->json([
+                'message' => 'No new participants to add.',
+                'conversation' => $conversation->fresh(['participants.user']),
             ]);
         }
 

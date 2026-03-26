@@ -575,6 +575,12 @@ export default function MessageThreadPage() {
   const [groupNameEditing, setGroupNameEditing] = useState(false);
   const [groupNameSaving, setGroupNameSaving] = useState(false);
   const [groupNameError, setGroupNameError] = useState<string | null>(null);
+  const [groupDescriptionDraft, setGroupDescriptionDraft] = useState("");
+  const [groupDescriptionEditing, setGroupDescriptionEditing] = useState(false);
+  const [groupDescriptionSaving, setGroupDescriptionSaving] = useState(false);
+  const [groupDescriptionError, setGroupDescriptionError] = useState<string | null>(null);
+  const [groupAvatarSaving, setGroupAvatarSaving] = useState(false);
+  const [groupAvatarError, setGroupAvatarError] = useState<string | null>(null);
   const [membersModalOpen, setMembersModalOpen] = useState(false);
   const [memberDirectory, setMemberDirectory] = useState<DirectoryUser[]>([]);
   const [memberSearch, setMemberSearch] = useState("");
@@ -634,6 +640,7 @@ export default function MessageThreadPage() {
   const processedRealtimeEventKeysRef = useRef<string[]>([]);
   const processedRealtimeEventLookupRef = useRef<Set<string>>(new Set());
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
+  const groupAvatarInputRef = useRef<HTMLInputElement | null>(null);
   const composerInputRef = useRef<HTMLInputElement | null>(null);
   const previousDraftRef = useRef<string>("");
   const messageBubbleRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -672,6 +679,11 @@ export default function MessageThreadPage() {
     setArchiveActionLoading(false);
     setEchoConnectionStatus("connecting");
     setMessageActionError(null);
+    setGroupDescriptionEditing(false);
+    setGroupDescriptionSaving(false);
+    setGroupDescriptionError(null);
+    setGroupAvatarSaving(false);
+    setGroupAvatarError(null);
     setReactionModalMessage(null);
     setReactionMutationLoadingKey(null);
     setForwardModalMessage(null);
@@ -932,6 +944,8 @@ export default function MessageThreadPage() {
 
     setGroupNameDraft(conversation.title?.trim() || "");
     setGroupNameError(null);
+    setGroupDescriptionDraft(conversation.description?.trim() || "");
+    setGroupDescriptionError(null);
   }, [conversation, isGroupConversation]);
 
   const presenceSubtitle = useMemo(() => {
@@ -1618,6 +1632,64 @@ export default function MessageThreadPage() {
       void refreshConversation().catch(() => undefined);
     });
 
+    channel.listen(
+      ".chat.conversation.updated",
+      (payload: {
+        conversation_id: number | string;
+        changes?: {
+          title?: string | null;
+          description?: string | null;
+          avatar_path?: string | null;
+          participants_updated?: boolean;
+        };
+      }) => {
+        if (String(payload.conversation_id) !== threadId) {
+          return;
+        }
+
+        if (
+          payload.changes?.title ||
+          Object.prototype.hasOwnProperty.call(payload.changes ?? {}, "description") ||
+          Object.prototype.hasOwnProperty.call(payload.changes ?? {}, "avatar_path")
+        ) {
+          setConversationData((previous) => {
+            if (!previous) {
+              return previous;
+            }
+
+            return {
+              ...previous,
+              conversation: {
+                ...previous.conversation,
+                title: payload.changes?.title ?? previous.conversation.title,
+                description: Object.prototype.hasOwnProperty.call(payload.changes ?? {}, "description")
+                  ? payload.changes?.description ?? null
+                  : previous.conversation.description,
+                avatar_path: Object.prototype.hasOwnProperty.call(payload.changes ?? {}, "avatar_path")
+                  ? payload.changes?.avatar_path ?? null
+                  : previous.conversation.avatar_path,
+              },
+            };
+          });
+
+          if (payload.changes?.title) {
+            dispatch(
+              patchThread({
+                id: threadId,
+                changes: {
+                  name: payload.changes.title,
+                },
+              })
+            );
+          }
+        }
+
+        if (payload.changes?.participants_updated) {
+          void refreshConversation().catch(() => undefined);
+        }
+      }
+    );
+
     channel.listen(".chat.user.presence.updated", (payload: ChatUserPresenceUpdatedEvent) => {
       const offset = resolveServerClockOffsetMs(payload.sent_at);
       if (offset !== null) {
@@ -2028,45 +2100,8 @@ export default function MessageThreadPage() {
       draftAttachments.forEach((item) => {
         if (item.previewUrl) {
           URL.revokeObjectURL(item.previewUrl);
-      }
-    });
-
-    channel.listen(
-      ".chat.conversation.updated",
-      (payload: { conversation_id: number | string; changes?: { title?: string | null; participants_updated?: boolean } }) => {
-      if (String(payload.conversation_id) !== threadId) {
-        return;
-      }
-
-      if (payload.changes?.title) {
-        setConversationData((previous) => {
-          if (!previous) {
-            return previous;
-          }
-
-          return {
-            ...previous,
-            conversation: {
-              ...previous.conversation,
-              title: payload.changes?.title ?? previous.conversation.title,
-            },
-          };
-        });
-
-        dispatch(
-          patchThread({
-            id: threadId,
-            changes: {
-              name: payload.changes.title,
-            },
-          })
-        );
-      }
-
-      if (payload.changes?.participants_updated) {
-        void refreshConversation();
-      }
-    });
+        }
+      });
       setDraftAttachments([]);
       setAttachmentError(null);
     } catch (error) {
@@ -2256,6 +2291,12 @@ export default function MessageThreadPage() {
     setGroupNameDraft(conversation?.title?.trim() || "");
   };
 
+  const cancelGroupDescriptionEdit = () => {
+    setGroupDescriptionEditing(false);
+    setGroupDescriptionError(null);
+    setGroupDescriptionDraft(conversation?.description?.trim() || "");
+  };
+
   const handleGroupNameSave = async () => {
     if (!threadId || !conversation || !isGroupConversation || !canEditGroupName) {
       return;
@@ -2300,6 +2341,79 @@ export default function MessageThreadPage() {
       setGroupNameError(firstError || axiosError.response?.data?.message || "Failed to update group name.");
     } finally {
       setGroupNameSaving(false);
+    }
+  };
+
+  const handleGroupDescriptionSave = async () => {
+    if (!threadId || !conversation || !isGroupConversation || !canEditGroupName) {
+      return;
+    }
+
+    setGroupDescriptionSaving(true);
+    setGroupDescriptionError(null);
+
+    try {
+      const response = await updateConversation(threadId, {
+        description: groupDescriptionDraft.trim() || null,
+      });
+
+      setConversationData((previous) => {
+        if (!previous) {
+          return previous;
+        }
+
+        return {
+          ...previous,
+          conversation: {
+            ...previous.conversation,
+            description: response.conversation.description ?? null,
+          },
+        };
+      });
+
+      setGroupDescriptionEditing(false);
+    } catch (error) {
+      const axiosError = error as AxiosError<ApiValidationErrorPayload>;
+      const firstError = Object.values(axiosError.response?.data?.errors ?? {})[0]?.[0];
+      setGroupDescriptionError(firstError || axiosError.response?.data?.message || "Failed to update group description.");
+    } finally {
+      setGroupDescriptionSaving(false);
+    }
+  };
+
+  const handleGroupAvatarChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const nextFile = event.target.files?.[0] ?? null;
+    event.target.value = "";
+
+    if (!nextFile || !threadId || !conversation || !isGroupConversation || !canEditGroupName) {
+      return;
+    }
+
+    setGroupAvatarSaving(true);
+    setGroupAvatarError(null);
+
+    try {
+      const response = await updateConversation(threadId, { avatar: nextFile });
+
+      setConversationData((previous) => {
+        if (!previous) {
+          return previous;
+        }
+
+        return {
+          ...previous,
+          conversation: {
+            ...previous.conversation,
+            avatar_path: response.conversation.avatar_path ?? null,
+          },
+        };
+      });
+    } catch (error) {
+      const axiosError = error as AxiosError<ApiValidationErrorPayload>;
+      const firstError = Object.values(axiosError.response?.data?.errors ?? {})[0]?.[0];
+      setGroupAvatarError(firstError || axiosError.response?.data?.message || "Failed to update group photo.");
+    } finally {
+      setGroupAvatarSaving(false);
     }
   };
 
@@ -3466,6 +3580,31 @@ export default function MessageThreadPage() {
                 <p className="mt-3 text-sm font-semibold text-slate-900">{detailsDisplayName}</p>
                 {isGroupConversation ? (
                   <div className="mt-3 text-left">
+                    {canEditGroupName && (
+                      <div className="mb-4">
+                        <input
+                          ref={groupAvatarInputRef}
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={(event) => void handleGroupAvatarChange(event)}
+                        />
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Group photo</p>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="rounded-full px-3 text-[11px]"
+                            onClick={() => groupAvatarInputRef.current?.click()}
+                            disabled={groupAvatarSaving}
+                          >
+                            {groupAvatarSaving ? "Uploading..." : detailsAvatarUrl ? "Change photo" : "Upload photo"}
+                          </Button>
+                        </div>
+                        {groupAvatarError && <p className="mt-2 text-xs text-rose-600">{groupAvatarError}</p>}
+                      </div>
+                    )}
                     <div className="flex items-center justify-between gap-2">
                       <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Group name</p>
                       {!groupNameEditing && canEditGroupName && (
@@ -3570,10 +3709,56 @@ export default function MessageThreadPage() {
               )}
 
               <div className="rounded-xl border border-slate-200 bg-white p-4">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">About</p>
-                <p className="mt-2 text-xs leading-relaxed text-slate-600">
-                  {conversation?.description || "Direct conversation thread."}
-                </p>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">About</p>
+                  {isGroupConversation && canEditGroupName && !groupDescriptionEditing && (
+                    <button
+                      type="button"
+                      className="text-[11px] font-semibold text-slate-500 hover:text-slate-700"
+                      onClick={() => setGroupDescriptionEditing(true)}
+                    >
+                      Edit
+                    </button>
+                  )}
+                </div>
+                {isGroupConversation && canEditGroupName && groupDescriptionEditing ? (
+                  <div className="mt-2 space-y-2">
+                    <textarea
+                      value={groupDescriptionDraft}
+                      onChange={(event) => setGroupDescriptionDraft(event.target.value)}
+                      placeholder="Write a short group description"
+                      rows={4}
+                      className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[color:var(--messenger-blue)]/30"
+                      disabled={groupDescriptionSaving}
+                    />
+                    {groupDescriptionError && <p className="text-xs text-rose-600">{groupDescriptionError}</p>}
+                    <div className="flex gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        className="rounded-full px-3 text-xs"
+                        onClick={() => void handleGroupDescriptionSave()}
+                        disabled={groupDescriptionSaving}
+                      >
+                        {groupDescriptionSaving ? "Saving..." : "Save"}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="rounded-full px-3 text-xs"
+                        onClick={cancelGroupDescriptionEdit}
+                        disabled={groupDescriptionSaving}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="mt-2 text-xs leading-relaxed text-slate-600">
+                    {conversation?.description || "Direct conversation thread."}
+                  </p>
+                )}
               </div>
 
               <div className="rounded-xl border border-slate-200 bg-white p-4">
