@@ -176,6 +176,48 @@ class ChatMessagingService
         return $forwardedMessage;
     }
 
+    public function sendSystemMessage(
+        Conversation $conversation,
+        User $actor,
+        ConversationParticipant $actorParticipant,
+        string $body,
+        array $metadata = []
+    ): Message {
+        $systemMessage = DB::transaction(function () use ($conversation, $actor, $actorParticipant, $body, $metadata) {
+            $message = Message::query()->create([
+                'conversation_id' => $conversation->id,
+                'sender_id' => $actor->id,
+                'message_type' => 'system',
+                'body' => trim($body),
+                'metadata' => $metadata,
+                'client_uid' => (string) Str::uuid(),
+            ]);
+
+            $this->syncConversationAfterMessageMutation($conversation, $actor, $actorParticipant, $message);
+
+            return $this->freshMessagePayload($message, (int) $actor->id);
+        });
+
+        broadcast(new MessageSent($conversation->id, $systemMessage->toArray()))->toOthers();
+        $recipientIds = $conversation->participants()
+            ->where('user_id', '!=', $actor->id)
+            ->whereNull('hidden_at')
+            ->pluck('user_id')
+            ->map(fn ($id) => (int) $id)
+            ->values()
+            ->all();
+
+        if ($recipientIds !== []) {
+            broadcast(new ConversationThreadUpdated(
+                (int) $conversation->id,
+                $systemMessage->toArray(),
+                $recipientIds
+            ))->toOthers();
+        }
+
+        return $systemMessage;
+    }
+
     public function markAsRead(
         Conversation $conversation,
         User $reader,

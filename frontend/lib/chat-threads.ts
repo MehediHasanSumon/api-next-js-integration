@@ -1,5 +1,18 @@
 import type { ConversationListItem, ParticipantState } from "@/types/chat";
 
+const getThreadLastMessageText = (conversation: ConversationListItem): string => {
+  const body = conversation.last_message?.body?.trim();
+  if (body) {
+    return body;
+  }
+
+  if (conversation.last_message?.attachments && conversation.last_message.attachments.length > 0) {
+    return "Sent attachment";
+  }
+
+  return conversation.last_message ? `[${conversation.last_message.message_type}]` : "No messages yet";
+};
+
 export interface ThreadItem {
   id: string;
   name: string;
@@ -50,9 +63,7 @@ export const mapConversationToThread = (conversation: ConversationListItem): Thr
   const counterpartEmail = conversation.counterpart?.email;
   const name = conversation.title?.trim() || counterpartName || conversation.last_message?.sender?.name || `Conversation #${conversation.conversation_id}`;
   const handle = counterpartEmail ? `@${counterpartEmail.split("@")[0]}` : `#${conversation.conversation_id}`;
-  const lastMessage =
-    conversation.last_message?.body?.trim() ||
-    (conversation.last_message ? `[${conversation.last_message.message_type}]` : "No messages yet");
+  const lastMessage = getThreadLastMessageText(conversation);
   const lastActivity = conversation.last_message?.created_at ?? conversation.last_message_at;
 
   return {

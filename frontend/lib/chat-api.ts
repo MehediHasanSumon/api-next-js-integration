@@ -1,6 +1,9 @@
 import api from "@/lib/axios";
 import type {
   Attachment,
+  CallResponse,
+  CallSummary,
+  CallType,
   ChatUser,
   DirectoryUser,
   Conversation,
@@ -30,6 +33,7 @@ import type {
   RequestAction,
   SendMessagePayload,
   SendMessageResponse,
+  StartCallPayload,
   UpdateMessagePayload,
   UpdateMessageResponse,
   UploadAttachmentResponse,
@@ -37,11 +41,21 @@ import type {
   StartConversationResponse,
   ToggleMessageReactionPayload,
   TypingResponse,
+  WebRtcAnswerSignalEvent,
+  WebRtcIceCandidatePayload,
+  WebRtcIceCandidateSignalEvent,
+  WebRtcOfferSignalEvent,
+  WebRtcSessionDescriptionPayload,
 } from "@/types/chat";
 
 export type {
   Attachment,
   AttachmentPayload,
+  CallParty,
+  CallResponse,
+  CallStatus,
+  CallSummary,
+  CallType,
   ChatUser,
   DirectoryUser,
   Conversation,
@@ -78,6 +92,7 @@ export type {
   RequestAction,
   SendMessagePayload,
   SendMessageResponse,
+  StartCallPayload,
   UpdateMessagePayload,
   UpdateMessageResponse,
   UploadAttachmentResponse,
@@ -85,10 +100,16 @@ export type {
   StartConversationResponse,
   ToggleMessageReactionPayload,
   TypingResponse,
+  WebRtcAnswerSignalEvent,
+  WebRtcIceCandidatePayload,
+  WebRtcIceCandidateSignalEvent,
+  WebRtcOfferSignalEvent,
+  WebRtcSessionDescriptionPayload,
 } from "@/types/chat";
 
 const CHAT_BASE = "/chat/conversations";
 const CHAT_MESSAGE_BASE = "/chat/messages";
+const CHAT_CALL_BASE = "/chat/calls";
 
 const cleanParams = <T extends object>(params: T): Partial<T> => {
   const output: Partial<T> = {};
@@ -106,6 +127,7 @@ const cleanParams = <T extends object>(params: T): Partial<T> => {
 
 const conversationPath = (conversationId: ConversationId): string => `${CHAT_BASE}/${conversationId}`;
 const messagePath = (messageId: MessageId): string => `${CHAT_MESSAGE_BASE}/${messageId}`;
+const callPath = (callId: number): string => `${CHAT_CALL_BASE}/${callId}`;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -432,6 +454,65 @@ const normalizeConversationShowResponse = (value: ConversationShowResponse): Con
   };
 };
 
+const normalizeCallParty = (value: unknown): CallSummary["caller"] => {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  return {
+    id: toNumber(value.id),
+    name: toNullableString(value.name) ?? "",
+    email: toNullableString(value.email) ?? "",
+  };
+};
+
+const normalizeCallSummary = (value: unknown): CallSummary | null => {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  return {
+    id: toNumber(value.id),
+    conversation_id: toNumber(value.conversation_id),
+    caller_id: toNumber(value.caller_id),
+    receiver_id: value.receiver_id === null || value.receiver_id === undefined ? null : toNumber(value.receiver_id),
+    call_type: (toNullableString(value.call_type) as CallType) ?? "audio",
+    status: toNullableString(value.status) ?? "initiated",
+    started_at: toNullableString(value.started_at),
+    answered_at: toNullableString(value.answered_at),
+    ended_at: toNullableString(value.ended_at),
+    duration_seconds:
+      value.duration_seconds === null || value.duration_seconds === undefined ? null : toNumber(value.duration_seconds),
+    end_reason: toNullableString(value.end_reason),
+    metadata: isRecord(value.metadata) ? value.metadata : null,
+    created_at: toNullableString(value.created_at),
+    updated_at: toNullableString(value.updated_at),
+    conversation: isRecord(value.conversation)
+      ? {
+          id: toNumber(value.conversation.id),
+          type: toNullableString(value.conversation.type),
+        }
+      : null,
+    caller: normalizeCallParty(value.caller),
+    receiver: normalizeCallParty(value.receiver),
+  };
+};
+
+const normalizeCallResponse = (value: CallResponse): CallResponse => ({
+  ...value,
+  data: normalizeCallSummary(value.data) ?? value.data,
+});
+
+const normalizeCallSignalResponse = <TSignal>(
+  value: { message?: string; data: { call: unknown; signal: TSignal } }
+): { message?: string; data: { call: CallSummary; signal: TSignal } } => ({
+  ...value,
+  data: {
+    ...value.data,
+    call: normalizeCallSummary(value.data.call) ?? (value.data.call as CallSummary),
+  },
+});
+
 const normalizeMessageListResponse = (value: MessageListResponse): MessageListResponse => {
   const conversationId = value.conversation_id;
 
@@ -672,6 +753,75 @@ export const unmuteConversation = async (
   return data;
 };
 
+export const startCall = async (
+  conversationId: ConversationId,
+  payload: StartCallPayload
+): Promise<CallResponse> => {
+  const { data } = await api.post<CallResponse>(`${conversationPath(conversationId)}/calls/start`, payload);
+  return normalizeCallResponse(data);
+};
+
+export const showCall = async (callId: number): Promise<CallResponse> => {
+  const { data } = await api.get<CallResponse>(callPath(callId));
+  return normalizeCallResponse(data);
+};
+
+export const acceptCall = async (callId: number): Promise<CallResponse> => {
+  const { data } = await api.post<CallResponse>(`${callPath(callId)}/accept`);
+  return normalizeCallResponse(data);
+};
+
+export const declineCall = async (callId: number): Promise<CallResponse> => {
+  const { data } = await api.post<CallResponse>(`${callPath(callId)}/decline`);
+  return normalizeCallResponse(data);
+};
+
+export const endCall = async (callId: number): Promise<CallResponse> => {
+  const { data } = await api.post<CallResponse>(`${callPath(callId)}/end`);
+  return normalizeCallResponse(data);
+};
+
+export const missCall = async (callId: number): Promise<CallResponse> => {
+  const { data } = await api.post<CallResponse>(`${callPath(callId)}/miss`);
+  return normalizeCallResponse(data);
+};
+
+export const sendWebRtcOffer = async (
+  callId: number,
+  payload: WebRtcSessionDescriptionPayload
+): Promise<{ message?: string; data: { call: CallSummary; signal: WebRtcOfferSignalEvent["signal"] } }> => {
+  const { data } = await api.post<{ message?: string; data: { call: CallSummary; signal: WebRtcOfferSignalEvent["signal"] } }>(
+    `${callPath(callId)}/signal/offer`,
+    payload
+  );
+
+  return normalizeCallSignalResponse(data);
+};
+
+export const sendWebRtcAnswer = async (
+  callId: number,
+  payload: WebRtcSessionDescriptionPayload
+): Promise<{ message?: string; data: { call: CallSummary; signal: WebRtcAnswerSignalEvent["signal"] } }> => {
+  const { data } = await api.post<{ message?: string; data: { call: CallSummary; signal: WebRtcAnswerSignalEvent["signal"] } }>(
+    `${callPath(callId)}/signal/answer`,
+    payload
+  );
+
+  return normalizeCallSignalResponse(data);
+};
+
+export const sendWebRtcIceCandidate = async (
+  callId: number,
+  payload: WebRtcIceCandidatePayload
+): Promise<{ message?: string; data: { call: CallSummary; signal: WebRtcIceCandidateSignalEvent["signal"] } }> => {
+  const { data } = await api.post<{ message?: string; data: { call: CallSummary; signal: WebRtcIceCandidateSignalEvent["signal"] } }>(
+    `${callPath(callId)}/signal/ice-candidate`,
+    payload
+  );
+
+  return normalizeCallSignalResponse(data);
+};
+
 export const blockConversation = async (
   conversationId: ConversationId
 ): Promise<ConversationActionResponse> => {
@@ -808,6 +958,15 @@ const chatApi = {
   respondToConversationRequest,
   markConversationRead,
   updateTyping,
+  startCall,
+  showCall,
+  acceptCall,
+  declineCall,
+  endCall,
+  missCall,
+  sendWebRtcOffer,
+  sendWebRtcAnswer,
+  sendWebRtcIceCandidate,
   archiveConversation,
   unarchiveConversation,
   muteConversation,

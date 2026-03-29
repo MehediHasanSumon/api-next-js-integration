@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\PresenceController;
 use App\Http\Controllers\Api\Chat\AttachmentController;
+use App\Http\Controllers\Api\Chat\CallController;
 use App\Http\Controllers\Api\Chat\ConversationController;
 use App\Http\Controllers\Api\Chat\MessageController;
 use App\Http\Controllers\Api\Chat\TypingController;
@@ -65,6 +66,15 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/conversations/{conversation}/messages', [MessageController::class, 'index']);
         Route::post('/conversations/{conversation}/messages', [MessageController::class, 'store']);
         Route::post('/conversations/{conversation}/messages/read', [MessageController::class, 'markRead']);
+        Route::post('/conversations/{conversation}/calls/start', [CallController::class, 'start']);
+        Route::get('/calls/{call}', [CallController::class, 'show']);
+        Route::post('/calls/{call}/accept', [CallController::class, 'accept']);
+        Route::post('/calls/{call}/decline', [CallController::class, 'decline']);
+        Route::post('/calls/{call}/end', [CallController::class, 'end']);
+        Route::post('/calls/{call}/miss', [CallController::class, 'miss']);
+        Route::post('/calls/{call}/signal/offer', [CallController::class, 'sendOffer']);
+        Route::post('/calls/{call}/signal/answer', [CallController::class, 'sendAnswer']);
+        Route::post('/calls/{call}/signal/ice-candidate', [CallController::class, 'sendIceCandidate']);
         Route::put('/messages/{message}', [MessageController::class, 'update']);
         Route::post('/messages/{message}/forward', [MessageController::class, 'forward']);
         Route::post('/messages/{message}/reactions', [MessageController::class, 'toggleReaction']);

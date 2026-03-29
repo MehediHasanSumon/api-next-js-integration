@@ -11,6 +11,16 @@ import MessengerLayout from "@/components/messenger/MessengerLayout";
 import MessengerThreadsSidebar from "@/components/messenger/MessengerThreadsSidebar";
 import MessengerHeader from "@/components/messenger/MessengerHeader";
 import MessageBubble from "@/components/messenger/MessageBubble";
+import { canAcceptIncomingCall as canAcceptIncomingCallByRule, canShowCallLauncher } from "@/lib/call-ui";
+import {
+  classifyCallNetworkQuality,
+  formatCallDuration,
+  getNetworkQualityLabel,
+  getNetworkQualityToneClassName,
+  readCallQualitySampleFromStats,
+  type CallNetworkQuality,
+} from "@/lib/call-phase2";
+import { createCallToneController, type CallToneController } from "@/lib/call-tones";
 import MessengerInfoPanel from "@/components/messenger/MessengerInfoPanel";
 import UserAvatar from "@/components/messenger/UserAvatar";
 import RecordingBar from "@/components/messenger/RecordingBar";
@@ -44,19 +54,46 @@ import {
   unmuteConversation,
   unarchiveConversation,
 } from "@/lib/chat-api";
+import callSignaling from "@/lib/call-signaling";
+import {
+  requestAudioStream,
+  requestVideoStream,
+  setAudioTracksEnabled,
+  setVideoTracksEnabled,
+  stopMediaStream,
+} from "@/lib/media-permissions";
 import { getPresenceStatus, pingPresence } from "@/lib/presence-api";
 import { formatLastSeen, getNowFromServerOffset, resolveServerClockOffsetMs } from "@/lib/presence-time";
+import { createWebRtcConnection, type WebRtcConnectionController } from "@/lib/webrtc";
 import { formatThreadRelativeTime, type ThreadItem } from "@/lib/chat-threads";
 import { getEcho } from "@/lib/echo";
 import { useMessengerThreads } from "@/lib/use-messenger-threads";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { patchThread } from "@/store/chatSlice";
+import {
+  resetCallState,
+  setCallError,
+  setCallStatus,
+  setCameraOff,
+  setCurrentCall,
+  setIncomingCallPayload,
+  setLocalStream,
+  setMuted,
+  setRemoteStream,
+} from "@/store/callSlice";
 import type {
   Attachment,
+  CallEventPayload,
+  CallMissedEventPayload,
+  WebRtcAnswerSignalEvent,
+  WebRtcIceCandidatePayload,
+  WebRtcIceCandidateSignalEvent,
+  WebRtcOfferSignalEvent,
   Conversation,
   ConversationListItem,
   ConversationShowResponse,
   AttachmentPayload,
+  CallType,
   Message,
   MessageRemovalMode,
   ReactionAggregate,
@@ -153,8 +190,28 @@ const clampNumber = (value: number, min: number, max: number): number => {
   return Math.min(Math.max(value, min), max);
 };
 
+const getMessageDisplayText = (message: Message): string => {
+  const trimmedBody = message.body?.trim();
+  if (trimmedBody) {
+    return trimmedBody;
+  }
+
+  const callHistoryEvent =
+    message.metadata && typeof message.metadata === "object" ? message.metadata.call_history_event : undefined;
+
+  if (message.message_type === "system" && typeof callHistoryEvent === "string") {
+    return "Call update";
+  }
+
+  if (message.attachments && message.attachments.length > 0) {
+    return "Sent attachment";
+  }
+
+  return `[${message.message_type}]`;
+};
+
 const getMessagePreviewText = (message: Message): string => {
-  return message.body?.trim() || `[${message.message_type}]`;
+  return getMessageDisplayText(message);
 };
 
 const getReplyPreviewText = (reply: Message["reply_to"]): string => {
@@ -578,6 +635,13 @@ export default function MessageThreadPage() {
 
   const currentUser = useAppSelector((state) => state.auth.user);
   const currentUserId = currentUser?.id ?? null;
+  const currentCall = useAppSelector((state) => state.call.currentCall);
+  const callStatus = useAppSelector((state) => state.call.callStatus);
+  const callLocalStream = useAppSelector((state) => state.call.localStream);
+  const callRemoteStream = useAppSelector((state) => state.call.remoteStream);
+  const isCallMuted = useAppSelector((state) => state.call.isMuted);
+  const isCallCameraOff = useAppSelector((state) => state.call.isCameraOff);
+  const incomingCallPayload = useAppSelector((state) => state.call.incomingCallPayload);
   const {
     threads,
     filteredThreads,
@@ -661,6 +725,14 @@ export default function MessageThreadPage() {
   } | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [callMenuOpen, setCallMenuOpen] = useState(false);
+  const [callActionLoading, setCallActionLoading] = useState<CallType | null>(null);
+  const [callActionError, setCallActionError] = useState<string | null>(null);
+  const [incomingCallActionLoading, setIncomingCallActionLoading] = useState<"accept" | "decline" | null>(null);
+  const [incomingCallError, setIncomingCallError] = useState<string | null>(null);
+  const [callDurationSeconds, setCallDurationSeconds] = useState(0);
+  const [callNetworkQuality, setCallNetworkQuality] = useState<CallNetworkQuality>("unavailable");
+  const [callReconnectState, setCallReconnectState] = useState<"idle" | "reconnecting">("idle");
   const [removeModalMessage, setRemoveModalMessage] = useState<Message | null>(null);
   const [removeModalMode, setRemoveModalMode] = useState<MessageRemovalMode>("for_you");
   const [removeModalLoading, setRemoveModalLoading] = useState(false);
@@ -696,6 +768,18 @@ export default function MessageThreadPage() {
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const groupAvatarInputRef = useRef<HTMLInputElement | null>(null);
   const composerInputRef = useRef<HTMLInputElement | null>(null);
+  const callMenuRef = useRef<HTMLDivElement | null>(null);
+  const activeCallLocalVideoRef = useRef<HTMLVideoElement | null>(null);
+  const activeCallRemoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const webRtcControllerRef = useRef<WebRtcConnectionController | null>(null);
+  const pendingIceCandidatesRef = useRef<WebRtcIceCandidatePayload[]>([]);
+  const missedCallTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeCallIdRef = useRef<number | null>(null);
+  const callCleanupThreadIdRef = useRef<string>(threadId);
+  const callReconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const callDurationIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const callQualityIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const toneControllerRef = useRef<CallToneController | null>(null);
   const previousDraftRef = useRef<string>("");
   const messageBubbleRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -772,6 +856,27 @@ export default function MessageThreadPage() {
     setHasMoreOlder(true);
     setIsRecording(false);
     setRecordingSeconds(0);
+    setCallMenuOpen(false);
+    setCallActionLoading(null);
+    setCallActionError(null);
+    setIncomingCallActionLoading(null);
+    setIncomingCallError(null);
+    setCallDurationSeconds(0);
+    setCallNetworkQuality("unavailable");
+    setCallReconnectState("idle");
+    if (callReconnectTimeoutRef.current) {
+      clearTimeout(callReconnectTimeoutRef.current);
+      callReconnectTimeoutRef.current = null;
+    }
+    if (callDurationIntervalRef.current) {
+      clearInterval(callDurationIntervalRef.current);
+      callDurationIntervalRef.current = null;
+    }
+    if (callQualityIntervalRef.current) {
+      clearInterval(callQualityIntervalRef.current);
+      callQualityIntervalRef.current = null;
+    }
+    toneControllerRef.current?.stop();
     if (recordingTimerRef.current) {
       clearInterval(recordingTimerRef.current);
       recordingTimerRef.current = null;
@@ -1123,6 +1228,16 @@ export default function MessageThreadPage() {
   const presenceSubtitleClassName =
     typingIndicatorText || presenceSubtitle.toLowerCase().includes("online") ? "text-emerald-600" : "text-slate-500";
   const isPresenceOnline = Boolean(typingIndicatorText) || presenceSubtitle.toLowerCase().includes("online");
+  const canStartCall = canShowCallLauncher({
+    conversationType: conversation?.type,
+    participantState: participant?.participant_state,
+    participantArchivedAt: participant?.archived_at,
+    counterpartParticipantState: counterpartParticipant?.participant_state,
+    counterpartArchivedAt: counterpartParticipant?.archived_at,
+    counterpartHiddenAt: counterpartParticipant?.hidden_at,
+    isBlockedConversation,
+    callStatus,
+  });
 
 
   const filteredForwardTargets = useMemo(() => {
@@ -1248,7 +1363,7 @@ export default function MessageThreadPage() {
         return false;
       }
 
-      if (message.message_type === "system" && !isCurrentUserAdmin) {
+      if (message.message_type === "system") {
         return false;
       }
 
@@ -1562,6 +1677,173 @@ export default function MessageThreadPage() {
       }
     };
 
+    const handleIncomingCallEvent = (payload: CallEventPayload) => {
+      if (String(payload.conversation_id) !== threadId) {
+        return;
+      }
+
+      if (currentUserId !== null && Number(payload.call.receiver_id) !== Number(currentUserId)) {
+        return;
+      }
+
+      const dedupeKey = `call.invite:${threadId}:${payload.call.id}:${payload.sent_at ?? ""}`;
+      if (!rememberRealtimeEvent(dedupeKey)) {
+        return;
+      }
+
+      dispatch(
+        setIncomingCallPayload({
+          conversationId: Number(payload.conversation_id),
+          call: payload.call,
+        })
+      );
+      dispatch(setCurrentCall(payload.call));
+      dispatch(setCallStatus("incoming"));
+      setIncomingCallError(null);
+    };
+
+    const handleAcceptedCallEvent = (payload: CallEventPayload) => {
+      if (String(payload.conversation_id) !== threadId) {
+        return;
+      }
+
+      const dedupeKey = `call.accepted:${threadId}:${payload.call.id}:${payload.sent_at ?? ""}`;
+      if (!rememberRealtimeEvent(dedupeKey)) {
+        return;
+      }
+
+      dispatch(setCurrentCall(payload.call));
+      dispatch(setIncomingCallPayload(null));
+      dispatch(setCallStatus("connecting"));
+      setIncomingCallError(null);
+
+      if (currentUserId !== null && Number(payload.call.caller_id) === Number(currentUserId)) {
+        void (async () => {
+          try {
+            const controller = await ensureCallControllerWithLocalStream(payload.call.id, payload.call.call_type);
+            const offer = await controller.createOffer();
+            await callSignaling.sendOffer(payload.call.id, offer);
+          } catch {
+            dispatch(setCallError("Failed to start WebRTC negotiation."));
+          }
+        })();
+      }
+    };
+
+    const handleDeclinedCallEvent = (payload: CallEventPayload) => {
+      if (String(payload.conversation_id) !== threadId) {
+        return;
+      }
+
+      const dedupeKey = `call.declined:${threadId}:${payload.call.id}:${payload.sent_at ?? ""}`;
+      if (!rememberRealtimeEvent(dedupeKey)) {
+        return;
+      }
+
+      dispatch(setCurrentCall(payload.call));
+      dispatch(setIncomingCallPayload(null));
+      dispatch(setCallStatus("ended"));
+      setIncomingCallActionLoading(null);
+      cleanupWebRtcRuntime();
+    };
+
+    const handleEndedCallEvent = (payload: CallEventPayload) => {
+      if (String(payload.conversation_id) !== threadId) {
+        return;
+      }
+
+      const dedupeKey = `call.ended:${threadId}:${payload.call.id}:${payload.sent_at ?? ""}`;
+      if (!rememberRealtimeEvent(dedupeKey)) {
+        return;
+      }
+
+      dispatch(setCurrentCall(payload.call));
+      dispatch(setIncomingCallPayload(null));
+      dispatch(setCallStatus("ended"));
+      setIncomingCallActionLoading(null);
+      cleanupWebRtcRuntime();
+    };
+
+    const handleMissedCallEvent = (payload: CallMissedEventPayload) => {
+      if (String(payload.conversation_id) !== threadId) {
+        return;
+      }
+
+      const dedupeKey = `call.missed:${threadId}:${payload.call.id}:${payload.sent_at ?? ""}`;
+      if (!rememberRealtimeEvent(dedupeKey)) {
+        return;
+      }
+
+      dispatch(setCurrentCall(payload.call));
+      dispatch(setIncomingCallPayload(null));
+      dispatch(setCallStatus("ended"));
+      dispatch(setCallError("Missed call."));
+      setIncomingCallActionLoading(null);
+      cleanupWebRtcRuntime();
+    };
+
+    const handleOfferEvent = (payload: WebRtcOfferSignalEvent) => {
+      if (String(payload.conversation_id) !== threadId) {
+        return;
+      }
+
+      if (currentUserId !== null && Number(payload.signal.to_user_id) !== Number(currentUserId)) {
+        return;
+      }
+
+      void (async () => {
+        try {
+          const controller = await ensureCallControllerWithLocalStream(payload.call.id, payload.call.call_type);
+          await controller.applyRemoteDescription(payload.signal);
+          const answer = await controller.createAnswer();
+          await callSignaling.sendAnswer(payload.call.id, answer);
+        } catch {
+          dispatch(setCallError("Failed to process incoming WebRTC offer."));
+        }
+      })();
+    };
+
+    const handleAnswerEvent = (payload: WebRtcAnswerSignalEvent) => {
+      if (String(payload.conversation_id) !== threadId) {
+        return;
+      }
+
+      if (currentUserId !== null && Number(payload.signal.to_user_id) !== Number(currentUserId)) {
+        return;
+      }
+
+      void (async () => {
+        try {
+          if (!webRtcControllerRef.current) {
+            return;
+          }
+
+          await webRtcControllerRef.current.applyRemoteDescription(payload.signal);
+        } catch {
+          dispatch(setCallError("Failed to apply WebRTC answer."));
+        }
+      })();
+    };
+
+    const handleIceCandidateEvent = (payload: WebRtcIceCandidateSignalEvent) => {
+      if (String(payload.conversation_id) !== threadId) {
+        return;
+      }
+
+      if (currentUserId !== null && Number(payload.signal.to_user_id) !== Number(currentUserId)) {
+        return;
+      }
+
+      if (!webRtcControllerRef.current) {
+        pendingIceCandidatesRef.current.push(payload.signal);
+        return;
+      }
+
+      void webRtcControllerRef.current.addIceCandidate(payload.signal).catch(() => {
+        dispatch(setCallError("Failed to apply ICE candidate."));
+      });
+    };
+
     const scheduleReconnect = () => {
       clearReconnectTimer();
 
@@ -1587,6 +1869,7 @@ export default function MessageThreadPage() {
       if (status === "connected") {
         echoReconnectAttemptRef.current = 0;
         clearReconnectTimer();
+        clearCallReconnectState();
         resetLocalTypingRuntimeState();
         clearRemoteTypingIndicators();
         clearStaleOnlinePresenceFlags();
@@ -1598,6 +1881,20 @@ export default function MessageThreadPage() {
           .then(async ([conversationResponse]) => {
             const participantIds = conversationResponse?.conversation.participants?.map((item) => Number(item.user_id)) ?? [];
             await refreshPresenceSnapshotForUserIds(participantIds);
+
+            if (activeCallIdRef.current) {
+              const callResponse = await callSignaling.showCall(activeCallIdRef.current);
+              dispatch(setCurrentCall(callResponse.data));
+
+              if (callResponse.data.status === "ended" || callResponse.data.status === "declined" || callResponse.data.status === "missed") {
+                cleanupCallState();
+                return;
+              }
+
+              if (callResponse.data.status === "accepted") {
+                dispatch(setCallStatus("active"));
+              }
+            }
           })
           .catch(() => undefined);
         return;
@@ -1829,6 +2126,15 @@ export default function MessageThreadPage() {
       }
     );
 
+    channel.listen(".call.invite", handleIncomingCallEvent);
+    channel.listen(".call.accepted", handleAcceptedCallEvent);
+    channel.listen(".call.declined", handleDeclinedCallEvent);
+    channel.listen(".call.ended", handleEndedCallEvent);
+    channel.listen(".call.missed", handleMissedCallEvent);
+    channel.listen(".webrtc.offer", handleOfferEvent);
+    channel.listen(".webrtc.answer", handleAnswerEvent);
+    channel.listen(".webrtc.ice-candidate", handleIceCandidateEvent);
+
     channel.listen(".chat.user.presence.updated", (payload: ChatUserPresenceUpdatedEvent) => {
       const offset = resolveServerClockOffsetMs(payload.sent_at);
       if (offset !== null) {
@@ -1852,6 +2158,15 @@ export default function MessageThreadPage() {
     });
 
     if (userChannel) {
+      userChannel.listen(".call.invite", handleIncomingCallEvent);
+      userChannel.listen(".call.accepted", handleAcceptedCallEvent);
+      userChannel.listen(".call.declined", handleDeclinedCallEvent);
+      userChannel.listen(".call.ended", handleEndedCallEvent);
+      userChannel.listen(".call.missed", handleMissedCallEvent);
+      userChannel.listen(".webrtc.offer", handleOfferEvent);
+      userChannel.listen(".webrtc.answer", handleAnswerEvent);
+      userChannel.listen(".webrtc.ice-candidate", handleIceCandidateEvent);
+
       userChannel.listen(".chat.message.removed", (payload: ChatMessageRemovedEvent) => {
         if (payload.mode !== "for_you" || String(payload.conversation_id) !== threadId) {
           return;
@@ -2914,11 +3229,507 @@ export default function MessageThreadPage() {
     };
   }, [goToNextImage, goToPreviousImage, imageViewer]);
 
+  useEffect(() => {
+    if (!callMenuOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (callMenuRef.current && !callMenuRef.current.contains(event.target as Node)) {
+        setCallMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+    };
+  }, [callMenuOpen]);
+
+  useEffect(() => {
+    if (activeCallLocalVideoRef.current) {
+      activeCallLocalVideoRef.current.srcObject = callLocalStream ?? null;
+    }
+  }, [callLocalStream]);
+
+  useEffect(() => {
+    if (activeCallRemoteVideoRef.current) {
+      activeCallRemoteVideoRef.current.srcObject = callRemoteStream ?? null;
+    }
+  }, [callRemoteStream]);
+
   const closeRemoveModal = () => {
     setRemoveModalMessage(null);
     setRemoveModalLoading(false);
     setRemoveModalError(null);
     setRemoveModalMode("for_you");
+  };
+
+  const cleanupWebRtcRuntime = useCallback(() => {
+    if (webRtcControllerRef.current) {
+      webRtcControllerRef.current.close();
+      webRtcControllerRef.current = null;
+    }
+
+    if (missedCallTimeoutRef.current) {
+      clearTimeout(missedCallTimeoutRef.current);
+      missedCallTimeoutRef.current = null;
+    }
+
+    if (callReconnectTimeoutRef.current) {
+      clearTimeout(callReconnectTimeoutRef.current);
+      callReconnectTimeoutRef.current = null;
+    }
+
+    if (callDurationIntervalRef.current) {
+      clearInterval(callDurationIntervalRef.current);
+      callDurationIntervalRef.current = null;
+    }
+
+    if (callQualityIntervalRef.current) {
+      clearInterval(callQualityIntervalRef.current);
+      callQualityIntervalRef.current = null;
+    }
+
+    pendingIceCandidatesRef.current = [];
+    toneControllerRef.current?.stop();
+    stopMediaStream(callLocalStream);
+    stopMediaStream(callRemoteStream);
+    dispatch(setLocalStream(null));
+    dispatch(setRemoteStream(null));
+    dispatch(setMuted(false));
+    dispatch(setCameraOff(false));
+    setCallDurationSeconds(0);
+    setCallNetworkQuality("unavailable");
+    setCallReconnectState("idle");
+  }, [callLocalStream, callRemoteStream, dispatch]);
+
+  const cleanupCallState = useCallback(() => {
+    cleanupWebRtcRuntime();
+    dispatch(resetCallState());
+  }, [cleanupWebRtcRuntime, dispatch]);
+
+  const playCallTone = useCallback((mode: "incoming" | "outgoing") => {
+    if (!toneControllerRef.current) {
+      toneControllerRef.current = createCallToneController();
+    }
+
+    toneControllerRef.current.play(mode);
+  }, []);
+
+  const stopCallTone = useCallback(() => {
+    toneControllerRef.current?.stop();
+  }, []);
+
+  const clearCallReconnectState = useCallback(() => {
+    if (callReconnectTimeoutRef.current) {
+      clearTimeout(callReconnectTimeoutRef.current);
+      callReconnectTimeoutRef.current = null;
+    }
+
+    setCallReconnectState("idle");
+  }, []);
+
+  const beginCallReconnect = useCallback(
+    (failureMessage: string) => {
+      setCallReconnectState("reconnecting");
+      dispatch(setCallStatus("connecting"));
+
+      if (callReconnectTimeoutRef.current) {
+        clearTimeout(callReconnectTimeoutRef.current);
+      }
+
+      callReconnectTimeoutRef.current = setTimeout(() => {
+        dispatch(setCallError(failureMessage));
+        cleanupCallState();
+      }, 15000);
+    },
+    [cleanupCallState, dispatch]
+  );
+
+  const createCallController = useCallback(
+    (callId: number, localStream: MediaStream) => {
+      if (webRtcControllerRef.current) {
+        webRtcControllerRef.current.close();
+      }
+
+      const controller = createWebRtcConnection({
+        localStream,
+        onRemoteStream: (stream) => {
+          dispatch(setRemoteStream(stream));
+        },
+        onIceCandidate: (candidate) => {
+          void callSignaling.sendIceCandidate(callId, candidate).catch(() => {
+            dispatch(setCallError("Failed to send ICE candidate."));
+          });
+        },
+        onConnectionStateChange: (state) => {
+          if (state === "connected") {
+            clearCallReconnectState();
+            dispatch(setCallStatus("active"));
+            return;
+          }
+
+          if (state === "disconnected") {
+            beginCallReconnect("Call connection could not be restored.");
+            return;
+          }
+
+          if (state === "failed") {
+            beginCallReconnect("Call connection failed.");
+          }
+        },
+        onIceConnectionStateChange: (state) => {
+          if (state === "disconnected") {
+            beginCallReconnect("Call media path could not be restored.");
+            return;
+          }
+
+          if (state === "checking") {
+            setCallNetworkQuality("unavailable");
+          }
+        },
+      });
+
+      webRtcControllerRef.current = controller;
+      dispatch(setLocalStream(localStream));
+      dispatch(setRemoteStream(controller.getRemoteStream()));
+      dispatch(setMuted(false));
+      dispatch(setCameraOff(localStream.getVideoTracks().length === 0));
+
+      if (pendingIceCandidatesRef.current.length > 0) {
+        const queuedCandidates = [...pendingIceCandidatesRef.current];
+        pendingIceCandidatesRef.current = [];
+        queuedCandidates.forEach((candidate) => {
+          void controller.addIceCandidate(candidate).catch(() => undefined);
+        });
+      }
+
+      return controller;
+    },
+    [beginCallReconnect, clearCallReconnectState, dispatch]
+  );
+
+  const requestLocalCallStream = useCallback(async (callType: CallType): Promise<MediaStream> => {
+    return callType === "video" ? requestVideoStream() : requestAudioStream();
+  }, []);
+
+  const ensureCallControllerWithLocalStream = useCallback(
+    async (callId: number, callType: CallType): Promise<WebRtcConnectionController> => {
+      if (webRtcControllerRef.current) {
+        return webRtcControllerRef.current;
+      }
+
+      const localStream = await requestLocalCallStream(callType);
+      return createCallController(callId, localStream);
+    },
+    [createCallController, requestLocalCallStream]
+  );
+
+  useEffect(() => {
+    if (
+      !currentCall ||
+      callStatus !== "calling" ||
+      currentCall.status !== "ringing" ||
+      currentUserId === null ||
+      Number(currentCall.caller_id) !== Number(currentUserId)
+    ) {
+      if (missedCallTimeoutRef.current) {
+        clearTimeout(missedCallTimeoutRef.current);
+        missedCallTimeoutRef.current = null;
+      }
+      return;
+    }
+
+    if (missedCallTimeoutRef.current) {
+      clearTimeout(missedCallTimeoutRef.current);
+    }
+
+    missedCallTimeoutRef.current = setTimeout(() => {
+      void callSignaling.missCall(currentCall.id).catch(() => undefined);
+    }, 30000);
+
+    return () => {
+      if (missedCallTimeoutRef.current) {
+        clearTimeout(missedCallTimeoutRef.current);
+        missedCallTimeoutRef.current = null;
+      }
+    };
+  }, [callStatus, currentCall, currentUserId]);
+
+  useEffect(() => {
+    activeCallIdRef.current =
+      currentCall && callStatus !== "idle" && callStatus !== "ended" ? currentCall.id : null;
+  }, [callStatus, currentCall]);
+
+  useEffect(() => {
+    if (callStatus === "calling") {
+      playCallTone("outgoing");
+      return;
+    }
+
+    if (callStatus === "incoming") {
+      playCallTone("incoming");
+      return;
+    }
+
+    stopCallTone();
+  }, [callStatus, playCallTone, stopCallTone]);
+
+  useEffect(() => {
+    return () => {
+      toneControllerRef.current?.close();
+      toneControllerRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!currentCall) {
+      setCallDurationSeconds(0);
+      return;
+    }
+
+    if (currentCall.duration_seconds !== null && (callStatus === "ended" || callStatus === "failed")) {
+      setCallDurationSeconds(currentCall.duration_seconds);
+      return;
+    }
+
+    const answeredAtMs = currentCall.answered_at ? new Date(currentCall.answered_at).getTime() : null;
+    if (answeredAtMs === null || !Number.isFinite(answeredAtMs)) {
+      setCallDurationSeconds(0);
+      return;
+    }
+
+    if (callDurationIntervalRef.current) {
+      clearInterval(callDurationIntervalRef.current);
+      callDurationIntervalRef.current = null;
+    }
+
+    const tick = () => {
+      setCallDurationSeconds(Math.max(0, Math.floor((Date.now() - answeredAtMs) / 1000)));
+    };
+
+    tick();
+
+    if (callStatus === "active" || callStatus === "connecting") {
+      callDurationIntervalRef.current = setInterval(tick, 1000);
+    }
+
+    return () => {
+      if (callDurationIntervalRef.current) {
+        clearInterval(callDurationIntervalRef.current);
+        callDurationIntervalRef.current = null;
+      }
+    };
+  }, [callStatus, currentCall]);
+
+  useEffect(() => {
+    const updateQuality = async () => {
+      if (!webRtcControllerRef.current) {
+        setCallNetworkQuality(callReconnectState === "reconnecting" ? "reconnecting" : "unavailable");
+        return;
+      }
+
+      try {
+        const peerConnection = webRtcControllerRef.current.getPeerConnection();
+        const statsReport = await peerConnection.getStats();
+        const sample = readCallQualitySampleFromStats(statsReport);
+
+        setCallNetworkQuality(
+          classifyCallNetworkQuality({
+            ...sample,
+            connectionState: peerConnection.connectionState,
+            iceConnectionState: peerConnection.iceConnectionState,
+            reconnecting: callReconnectState === "reconnecting",
+          })
+        );
+      } catch {
+        setCallNetworkQuality(callReconnectState === "reconnecting" ? "reconnecting" : "unavailable");
+      }
+    };
+
+    if (callQualityIntervalRef.current) {
+      clearInterval(callQualityIntervalRef.current);
+      callQualityIntervalRef.current = null;
+    }
+
+    if (!currentCall || (callStatus !== "active" && callStatus !== "connecting")) {
+      setCallNetworkQuality(callReconnectState === "reconnecting" ? "reconnecting" : "unavailable");
+      return;
+    }
+
+    void updateQuality();
+    callQualityIntervalRef.current = setInterval(() => {
+      void updateQuality();
+    }, 5000);
+
+    return () => {
+      if (callQualityIntervalRef.current) {
+        clearInterval(callQualityIntervalRef.current);
+        callQualityIntervalRef.current = null;
+      }
+    };
+  }, [callReconnectState, callStatus, currentCall]);
+
+  useEffect(() => {
+    if (callCleanupThreadIdRef.current === threadId) {
+      return;
+    }
+
+    callCleanupThreadIdRef.current = threadId;
+    cleanupCallState();
+  }, [cleanupCallState, threadId]);
+
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      cleanupWebRtcRuntime();
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+    };
+  }, [cleanupWebRtcRuntime]);
+
+  useEffect(() => {
+    return () => {
+      cleanupWebRtcRuntime();
+    };
+  }, [cleanupWebRtcRuntime]);
+
+  useEffect(() => {
+    if (callStatus !== "failed") {
+      return;
+    }
+
+    cleanupWebRtcRuntime();
+  }, [callStatus, cleanupWebRtcRuntime]);
+
+  useEffect(() => {
+    if (echoConnectionStatus !== "disconnected" && echoConnectionStatus !== "failed") {
+      return;
+    }
+
+    if (!activeCallIdRef.current) {
+      return;
+    }
+
+    beginCallReconnect("Realtime connection could not be restored.");
+  }, [beginCallReconnect, echoConnectionStatus]);
+
+  const handleStartCall = async (callType: CallType) => {
+    if (!conversation || !canStartCall || callActionLoading) {
+      return;
+    }
+
+    setCallMenuOpen(false);
+    setCallActionLoading(callType);
+    setCallActionError(null);
+    dispatch(setCallError(null));
+
+    try {
+      const response = await callSignaling.startCall(conversation.id, { call_type: callType });
+      dispatch(setCurrentCall(response.data));
+      dispatch(setCallStatus("calling"));
+    } catch (error) {
+      const axiosError = error as AxiosError<ApiValidationErrorPayload>;
+      const firstValidationError = axiosError.response?.data?.errors
+        ? Object.values(axiosError.response.data.errors)[0]?.[0]
+        : null;
+      const message = firstValidationError || axiosError.response?.data?.message || `Failed to start ${callType} call.`;
+      setCallActionError(message);
+      dispatch(setCallError(message));
+    } finally {
+      setCallActionLoading(null);
+    }
+  };
+
+  const handleAcceptIncomingCall = async () => {
+    if (!incomingCallPayload?.call) {
+      return;
+    }
+
+    if (!canAcceptIncomingCall) {
+      setIncomingCallError("You can't accept calls in this conversation right now.");
+      return;
+    }
+
+    setIncomingCallActionLoading("accept");
+    setIncomingCallError(null);
+    dispatch(setCallError(null));
+
+    try {
+      const response = await callSignaling.acceptCall(incomingCallPayload.call.id);
+      await ensureCallControllerWithLocalStream(response.data.id, response.data.call_type);
+      dispatch(setCurrentCall(response.data));
+      dispatch(setIncomingCallPayload(null));
+      dispatch(setCallStatus("connecting"));
+    } catch (error) {
+      const axiosError = error as AxiosError<ApiValidationErrorPayload>;
+      const firstValidationError = axiosError.response?.data?.errors
+        ? Object.values(axiosError.response.data.errors)[0]?.[0]
+        : null;
+      const message = firstValidationError || axiosError.response?.data?.message || "Failed to accept call.";
+      setIncomingCallError(message);
+      dispatch(setCallError(message));
+    } finally {
+      setIncomingCallActionLoading(null);
+    }
+  };
+
+  const handleDeclineIncomingCall = async () => {
+    if (!incomingCallPayload?.call) {
+      return;
+    }
+
+    setIncomingCallActionLoading("decline");
+    setIncomingCallError(null);
+    dispatch(setCallError(null));
+
+    try {
+      const response = await callSignaling.declineCall(incomingCallPayload.call.id);
+      dispatch(setCurrentCall(response.data));
+      dispatch(setIncomingCallPayload(null));
+      dispatch(setCallStatus("ended"));
+    } catch (error) {
+      const axiosError = error as AxiosError<ApiValidationErrorPayload>;
+      const firstValidationError = axiosError.response?.data?.errors
+        ? Object.values(axiosError.response.data.errors)[0]?.[0]
+        : null;
+      const message = firstValidationError || axiosError.response?.data?.message || "Failed to decline call.";
+      setIncomingCallError(message);
+      dispatch(setCallError(message));
+    } finally {
+      setIncomingCallActionLoading(null);
+    }
+  };
+
+  const handleToggleMuteCall = () => {
+    const nextMuted = !isCallMuted;
+    setAudioTracksEnabled(callLocalStream, !nextMuted);
+    dispatch(setMuted(nextMuted));
+  };
+
+  const handleToggleCameraCall = () => {
+    const nextCameraOff = !isCallCameraOff;
+    setVideoTracksEnabled(callLocalStream, !nextCameraOff);
+    dispatch(setCameraOff(nextCameraOff));
+  };
+
+  const handleEndActiveCall = async () => {
+    if (!currentCall) {
+      return;
+    }
+
+    try {
+      await callSignaling.endCall(currentCall.id);
+    } catch {
+      // Keep local cleanup even if remote end request fails.
+    } finally {
+      cleanupCallState();
+    }
   };
 
   const uploadDraftAttachment = async (
@@ -3400,8 +4211,55 @@ export default function MessageThreadPage() {
   const isDeclinedThread = participant?.participant_state === "declined";
   const isArchivedThread = participant?.archived_at !== null;
   const isMutedThread = isFutureIsoDate(participant?.muted_until);
-  const canSendMessage = participant?.participant_state === "accepted" && !isBlockedConversation;
+  const canSendMessage =
+    participant?.participant_state === "accepted" &&
+    participant?.archived_at === null &&
+    !isBlockedConversation;
   const removeModalCanEverywhere = removeModalMessage ? canRemoveEverywhereByPolicy(removeModalMessage) : false;
+  const hasIncomingCall = Boolean(incomingCallPayload?.call);
+  const canAcceptIncomingCall = canAcceptIncomingCallByRule({
+    participantState: participant?.participant_state,
+    participantArchivedAt: participant?.archived_at,
+    isBlockedConversation,
+    callStatus,
+  });
+  const incomingCallerName =
+    incomingCallPayload?.call.caller?.name?.trim() ||
+    activeThread?.name ||
+    "Someone";
+  const incomingCallTypeLabel = incomingCallPayload?.call.call_type === "video" ? "Video call" : "Audio call";
+  const showActiveCallPanel = Boolean(currentCall) && callStatus !== "idle" && callStatus !== "incoming";
+  const activeCallDisplayName =
+    (currentUserId !== null && Number(currentCall?.caller_id) === Number(currentUserId)
+      ? currentCall?.receiver?.name
+      : currentCall?.caller?.name) ||
+    activeThread?.name ||
+    "Call";
+  const activeCallStatusLabel =
+    callReconnectState === "reconnecting"
+      ? "Reconnecting..."
+      : callStatus === "calling"
+      ? currentCall?.status === "ringing"
+        ? "Ringing..."
+        : "Calling..."
+      : callStatus === "connecting"
+        ? "Connecting..."
+        : callStatus === "active"
+          ? "Live now"
+          : currentCall?.status === "missed"
+            ? "Missed call"
+          : callStatus === "ended"
+            ? "Call ended"
+          : callStatus === "failed"
+              ? "Call failed"
+              : "In progress";
+  const activeCallDurationLabel = formatCallDuration(callDurationSeconds);
+  const activeCallNetworkLabel = getNetworkQualityLabel(callNetworkQuality);
+  const activeCallNetworkToneClassName = getNetworkQualityToneClassName(callNetworkQuality);
+  const showActiveCallDuration =
+    Boolean(currentCall?.answered_at) ||
+    callDurationSeconds > 0 ||
+    (currentCall?.duration_seconds ?? 0) > 0;
 
   return (
     <ProtectedShell
@@ -3437,11 +4295,54 @@ export default function MessageThreadPage() {
               isOnline={isPresenceOnline}
               actions={
                 <>
-                  <Button type="button" variant="ghost" size="icon" className="rounded-full text-slate-500" aria-label="Start call">
-                    <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 10l4.55-2.28A1 1 0 0121 8.62v6.76a1 1 0 01-1.45.9L15 14M5 19h8a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                    </svg>
-                  </Button>
+                  {canStartCall && (
+                    <div ref={callMenuRef} className="relative">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="rounded-full text-slate-500"
+                        aria-label="Start call"
+                        aria-expanded={callMenuOpen}
+                        onClick={() => setCallMenuOpen((previous) => !previous)}
+                        disabled={Boolean(callActionLoading)}
+                      >
+                        <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 10l4.55-2.28A1 1 0 0121 8.62v6.76a1 1 0 01-1.45.9L15 14M5 19h8a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                        </svg>
+                      </Button>
+                      {callMenuOpen && (
+                        <div className="absolute right-0 top-12 z-20 w-44 rounded-2xl border border-slate-200 bg-white p-2 shadow-xl">
+                          <button
+                            type="button"
+                            className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                            onClick={() => void handleStartCall("audio")}
+                            disabled={Boolean(callActionLoading)}
+                          >
+                            <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-emerald-50 text-emerald-600">
+                              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 18a6 6 0 006-6V8a6 6 0 10-12 0v4a6 6 0 006 6zm0 0v3m-4 0h8" />
+                              </svg>
+                            </span>
+                            <span>{callActionLoading === "audio" ? "Starting..." : "Audio call"}</span>
+                          </button>
+                          <button
+                            type="button"
+                            className="mt-1 flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                            onClick={() => void handleStartCall("video")}
+                            disabled={Boolean(callActionLoading)}
+                          >
+                            <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-sky-50 text-sky-600">
+                              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 10l4.55-2.28A1 1 0 0121 8.62v6.76a1 1 0 01-1.45.9L15 14M5 19h8a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                              </svg>
+                            </span>
+                            <span>{callActionLoading === "video" ? "Starting..." : "Video call"}</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
                   <Button
                     type="button"
                     variant={showInfoPanel ? "outline" : "ghost"}
@@ -3473,6 +4374,12 @@ export default function MessageThreadPage() {
                     </Button>
                   )}
                 </div>
+              </div>
+            )}
+
+            {callActionError && (
+              <div className="border-b border-rose-200 bg-rose-50 px-4 py-2 text-xs text-rose-700">
+                {callActionError}
               </div>
             )}
 
@@ -3516,11 +4423,17 @@ export default function MessageThreadPage() {
                       const messageIdKey = String(message.id);
                       const isEditing = editingMessageId === messageIdKey;
                       const isRemovedForEveryone = hasRemovedForEveryoneFlag(message);
-                      const canUseMessageActions = participant?.participant_state === "accepted" && participant.archived_at === null && !isOptimistic;
+                      const isTimelineSystemMessage = message.message_type === "system" && !isRemovedForEveryone;
+                      const isStatusMessage = isRemovedForEveryone;
+                      const canUseMessageActions =
+                        participant?.participant_state === "accepted" &&
+                        participant.archived_at === null &&
+                        !isOptimistic &&
+                        !isTimelineSystemMessage;
                       const canReactMessage = canUseMessageActions && !isRemovedForEveryone;
                       const canForwardMessage = canUseMessageActions && !isRemovedForEveryone;
                       const canReplyMessage = canUseMessageActions && !isRemovedForEveryone;
-                      const canRemoveForYou = !isOptimistic;
+                      const canRemoveForYou = !isOptimistic && !isTimelineSystemMessage;
                       const canRemoveEverywhere = canRemoveEverywhereByPolicy(message);
                       const canEditMessage =
                         canUseMessageActions &&
@@ -3538,6 +4451,7 @@ export default function MessageThreadPage() {
                         !isOptimistic &&
                         !isGroupConversation &&
                         isMine &&
+                        !isTimelineSystemMessage &&
                         latestOwnMessageId === messageIdKey &&
                         counterpartParticipant?.participant_state === "accepted";
                       const messageNumericId = toNumericId(message.id);
@@ -3548,12 +4462,7 @@ export default function MessageThreadPage() {
                           ? "Seen"
                           : "Delivered"
                         : null;
-                      const messageText =
-                        message.body?.trim() ||
-                        (message.attachments && message.attachments.length > 0
-                          ? "Sent attachment"
-                          : `[${message.message_type}]`);
-                      const isSystemMessage = isRemovedForEveryone || message.message_type === "system";
+                      const messageText = getMessageDisplayText(message);
                       const attachmentsForTextCheck = message.attachments ?? [];
                       const shouldHideMessageText =
                         !message.body?.trim() &&
@@ -3571,7 +4480,10 @@ export default function MessageThreadPage() {
                         "?";
 
                       return (
-                        <div key={messageIdKey} className={`group relative flex items-end gap-2 ${isMine ? "justify-end" : "justify-start"}`}>
+                        <div
+                          key={messageIdKey}
+                          className={`group relative flex items-end gap-2 ${isMine ? "justify-end" : "justify-start"}`}
+                        >
                           {!isMine && (
                             <div className="mb-6">
                               <UserAvatar
@@ -3647,7 +4559,13 @@ export default function MessageThreadPage() {
                               }}
                               className="relative inline-block"
                             >
-                              <MessageBubble isMine={isMine} isSystem={isSystemMessage} className={isSystemMessage ? "italic" : ""}>
+                              <MessageBubble
+                                isMine={isMine}
+                                isSystem={isTimelineSystemMessage}
+                                isRemoved={isStatusMessage}
+                                isTimelineEvent={isTimelineSystemMessage}
+                                className={isTimelineSystemMessage || isStatusMessage ? "italic" : ""}
+                              >
                               {message.reply_to && (
                                 <div
                                   className={`mb-2 rounded-2xl border px-3 py-2 text-xs ${
@@ -3665,7 +4583,7 @@ export default function MessageThreadPage() {
                               {(message.forwarded_from_message_id || message.forwarded_snapshot) && (
                                 <p
                                   className={`mb-1 text-[11px] font-semibold uppercase tracking-wide ${
-                                    isSystemMessage ? "text-amber-700" : isMine ? "text-blue-100" : "text-slate-500"
+                                    isTimelineSystemMessage ? "text-amber-700" : isMine ? "text-blue-100" : "text-slate-500"
                                   }`}
                                 >
                                   Forwarded
@@ -3688,10 +4606,22 @@ export default function MessageThreadPage() {
                                 />
                               )}
 
-                              <p className={`mt-1 text-[11px] ${isMine ? "text-blue-100/80" : "text-slate-500"}`}>
+                              <p
+                                className={`mt-1 text-[11px] ${
+                                  isTimelineSystemMessage || isStatusMessage
+                                    ? "text-slate-400"
+                                    : isMine
+                                      ? "text-blue-100/80"
+                                      : "text-slate-500"
+                                }`}
+                              >
                                 {isOptimistic
                                   ? "Sending..."
-                                  : `${formatClockTime(message.created_at)}${editedLabel}${deliveryStatus ? ` \u00b7 ${deliveryStatus}` : ""}`}
+                                  : `${
+                                      formatClockTime(message.created_at)
+                                    }${isTimelineSystemMessage ? "" : editedLabel}${
+                                      deliveryStatus ? ` \u00b7 ${deliveryStatus}` : ""
+                                    }`}
                               </p>
                               </MessageBubble>
                             </div>
@@ -4626,6 +5556,223 @@ export default function MessageThreadPage() {
                 {(imageViewer.index ?? 0) + 1} / {imageViewer.list.length}
               </p>
             ) : null}
+          </div>
+        </div>
+      )}
+
+      {hasIncomingCall && incomingCallPayload?.call && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-slate-950/50 backdrop-blur-sm" />
+          <div className="relative w-full max-w-sm rounded-[28px] border border-white/70 bg-white p-6 shadow-2xl">
+            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-emerald-50 text-emerald-600">
+              {incomingCallPayload.call.call_type === "video" ? (
+                <svg className="h-7 w-7" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 10l4.55-2.28A1 1 0 0121 8.62v6.76a1 1 0 01-1.45.9L15 14M5 19h8a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                </svg>
+              ) : (
+                <svg className="h-7 w-7" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 18a6 6 0 006-6V8a6 6 0 10-12 0v4a6 6 0 006 6zm0 0v3m-4 0h8" />
+                </svg>
+              )}
+            </div>
+            <p className="mt-5 text-center text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">
+              Incoming {incomingCallTypeLabel}
+            </p>
+            <h2 className="mt-2 text-center text-2xl font-semibold text-slate-900">{incomingCallerName}</h2>
+              <p className="mt-2 text-center text-sm text-slate-500">
+                {incomingCallPayload.call.call_type === "video"
+                  ? "They want to start a video call with you."
+                  : "They are calling you now."}
+              </p>
+
+              {!canAcceptIncomingCall && (
+                <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                  This conversation is not currently eligible for answering calls.
+                </div>
+              )}
+
+              {incomingCallError && (
+                <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                  {incomingCallError}
+                </div>
+            )}
+
+            <div className="mt-6 flex items-center justify-center gap-3">
+              <Button
+                type="button"
+                variant="danger"
+                className="min-w-28 rounded-full"
+                onClick={() => void handleDeclineIncomingCall()}
+                loading={incomingCallActionLoading === "decline"}
+                disabled={Boolean(incomingCallActionLoading)}
+              >
+                Decline
+              </Button>
+                <Button
+                  type="button"
+                  className="min-w-28 rounded-full bg-emerald-600 hover:bg-emerald-700"
+                  onClick={() => void handleAcceptIncomingCall()}
+                  loading={incomingCallActionLoading === "accept"}
+                  disabled={Boolean(incomingCallActionLoading) || !canAcceptIncomingCall}
+                >
+                  Accept
+                </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showActiveCallPanel && currentCall && (
+        <div className="fixed inset-x-0 bottom-4 z-40 flex justify-center px-4">
+          <div className="w-full max-w-4xl overflow-hidden rounded-[28px] border border-slate-200/80 bg-white/95 shadow-2xl backdrop-blur">
+            <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-5 py-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">
+                  {currentCall.call_type === "video" ? "Video call" : "Audio call"}
+                </p>
+                <h2 className="mt-1 text-lg font-semibold text-slate-900">{activeCallDisplayName}</h2>
+                <p className="mt-1 text-sm text-slate-500">{activeCallStatusLabel}</p>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  {showActiveCallDuration && (
+                    <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium text-slate-600">
+                      {activeCallDurationLabel}
+                    </span>
+                  )}
+                  <span className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium text-slate-600">
+                    <span className={`h-2 w-2 rounded-full ${activeCallNetworkToneClassName}`} />
+                    {activeCallNetworkLabel}
+                  </span>
+                </div>
+              </div>
+              <Button
+                type="button"
+                variant="danger"
+                className="rounded-full"
+                onClick={() => void handleEndActiveCall()}
+              >
+                End call
+              </Button>
+            </div>
+
+            {currentCall.call_type === "video" ? (
+              <div className="grid gap-3 bg-slate-950 p-4 md:grid-cols-[minmax(0,1fr)_240px]">
+                <div className="relative flex min-h-[260px] items-center justify-center overflow-hidden rounded-3xl border border-white/10 bg-slate-900">
+                  {callRemoteStream ? (
+                    <video
+                      ref={activeCallRemoteVideoRef}
+                      autoPlay
+                      playsInline
+                      className="h-full w-full object-cover"
+                    />
+                  ) : (
+                    <div className="text-center text-white">
+                      <p className="text-sm font-medium">Waiting for remote video...</p>
+                      <p className="mt-1 text-xs text-slate-300">Remote participant will appear here.</p>
+                    </div>
+                  )}
+                  <div className="absolute left-4 top-4 flex flex-wrap items-center gap-2">
+                    {showActiveCallDuration && (
+                      <span className="rounded-full bg-slate-950/70 px-3 py-1 text-xs font-medium text-white">
+                        {activeCallDurationLabel}
+                      </span>
+                    )}
+                    <span className="inline-flex items-center gap-2 rounded-full bg-slate-950/70 px-3 py-1 text-xs font-medium text-white">
+                      <span className={`h-2 w-2 rounded-full ${activeCallNetworkToneClassName}`} />
+                      {activeCallNetworkLabel}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex min-h-[260px] flex-col gap-3">
+                  <div className="relative flex flex-1 items-center justify-center overflow-hidden rounded-3xl border border-white/10 bg-slate-900">
+                    {callLocalStream && !isCallCameraOff ? (
+                      <video
+                        ref={activeCallLocalVideoRef}
+                        autoPlay
+                        muted
+                        playsInline
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      <div className="text-center text-white">
+                        <p className="text-sm font-medium">{isCallCameraOff ? "Camera is off" : "Camera preview"}</p>
+                        <p className="mt-1 text-xs text-slate-300">
+                          {callLocalStream ? "Turn camera on to preview video." : "Your local video will appear here."}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                  <div className="rounded-3xl bg-white p-3">
+                    <div className="grid grid-cols-3 gap-2">
+                      <Button
+                        type="button"
+                        variant={isCallMuted ? "outline" : "secondary"}
+                        className="rounded-full"
+                        onClick={handleToggleMuteCall}
+                      >
+                        {isCallMuted ? "Unmute" : "Mute"}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant={isCallCameraOff ? "outline" : "secondary"}
+                        className="rounded-full"
+                        onClick={handleToggleCameraCall}
+                      >
+                        {isCallCameraOff ? "Camera on" : "Camera off"}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="danger"
+                        className="rounded-full"
+                        onClick={() => void handleEndActiveCall()}
+                      >
+                        Hang up
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-[radial-gradient(circle_at_top,#f8fafc_0%,#e2e8f0_100%)] px-5 py-10">
+                <div className="mx-auto flex max-w-xl flex-col items-center text-center">
+                  <div className="flex h-24 w-24 items-center justify-center rounded-full bg-white text-slate-700 shadow-lg">
+                    <svg className="h-10 w-10" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 18a6 6 0 006-6V8a6 6 0 10-12 0v4a6 6 0 006 6zm0 0v3m-4 0h8" />
+                    </svg>
+                  </div>
+                  <h3 className="mt-5 text-2xl font-semibold text-slate-900">{activeCallDisplayName}</h3>
+                  <p className="mt-2 text-sm text-slate-500">{activeCallStatusLabel}</p>
+                  <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                    {showActiveCallDuration && (
+                      <span className="inline-flex items-center rounded-full border border-slate-200 bg-white/80 px-3 py-1 text-xs font-medium text-slate-600">
+                        {activeCallDurationLabel}
+                      </span>
+                    )}
+                    <span className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white/80 px-3 py-1 text-xs font-medium text-slate-600">
+                      <span className={`h-2 w-2 rounded-full ${activeCallNetworkToneClassName}`} />
+                      {activeCallNetworkLabel}
+                    </span>
+                  </div>
+                  <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
+                    <Button
+                      type="button"
+                      variant={isCallMuted ? "outline" : "secondary"}
+                      className="rounded-full"
+                      onClick={handleToggleMuteCall}
+                    >
+                      {isCallMuted ? "Unmute microphone" : "Mute microphone"}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="danger"
+                      className="rounded-full"
+                      onClick={() => void handleEndActiveCall()}
+                    >
+                      End call
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
