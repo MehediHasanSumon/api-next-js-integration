@@ -142,6 +142,11 @@ export default function MessageAttachments({
         const attachmentName =
           attachment.original_name || attachment.storage_path.split("/").pop() || "Attachment";
         const attachmentUrl = url;
+        const downloadUrl = !attachmentUrl
+          ? null
+          : attachmentUrl.startsWith("blob:")
+            ? attachmentUrl
+            : `${attachmentUrl}${attachmentUrl.includes("?") ? "&" : "?"}download=1`;
         const isImageAttachment = attachment.attachment_type === "image";
 
         return (
@@ -186,9 +191,9 @@ export default function MessageAttachments({
                 </p>
               </div>
             </div>
-            {attachmentUrl && (
+            {downloadUrl && (
               <a
-                href={attachmentUrl}
+                href={downloadUrl}
                 target="_blank"
                 rel="noreferrer"
                 download

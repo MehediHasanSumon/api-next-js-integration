@@ -11,7 +11,7 @@ import MessengerLayout from "@/components/messenger/MessengerLayout";
 import MessengerThreadsSidebar from "@/components/messenger/MessengerThreadsSidebar";
 import MessengerHeader from "@/components/messenger/MessengerHeader";
 import MessageBubble from "@/components/messenger/MessageBubble";
-import { canAcceptIncomingCall as canAcceptIncomingCallByRule, canShowCallLauncher } from "@/lib/call-ui";
+import { canShowCallLauncher } from "@/lib/call-ui";
 import {
   classifyCallNetworkQuality,
   formatCallDuration,
@@ -380,12 +380,14 @@ const formatFileSize = (size: number): string => {
 };
 
 const resolveAttachmentUrl = (attachment: Attachment | AttachmentPayload): string | null => {
-  if (!attachment.storage_path) {
-    return null;
-  }
+  const metadata = attachment.metadata;
+  const localPreviewUrl =
+    metadata && typeof metadata === "object" && typeof metadata.local_preview_url === "string"
+      ? metadata.local_preview_url
+      : null;
 
-  if (attachment.storage_disk && attachment.storage_disk !== "public") {
-    return null;
+  if (localPreviewUrl) {
+    return localPreviewUrl;
   }
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL;
@@ -393,10 +395,13 @@ const resolveAttachmentUrl = (attachment: Attachment | AttachmentPayload): strin
     return null;
   }
 
-  const baseUrl = apiUrl.replace(/\/api\/?$/, "");
-  const normalizedPath = attachment.storage_path.replace(/^public\//, "").replace(/^\/+/, "");
+  const attachmentId = "id" in attachment ? attachment.id : null;
 
-  return `${baseUrl}/storage/${normalizedPath}`;
+  if (attachmentId === null || attachmentId === undefined || attachmentId === "") {
+    return null;
+  }
+
+  return `${apiUrl.replace(/\/$/, "")}/chat/attachments/${attachmentId}`;
 };
 
 const resolveAvatarUrl = (avatarPath: string | null): string | null => {
@@ -427,7 +432,7 @@ const mapAttachmentPayloadToAttachment = (
     message_id: messageId,
     uploader_id: fallbackUserId,
     attachment_type: payload.attachment_type,
-    storage_disk: payload.storage_disk ?? "public",
+    storage_disk: payload.storage_disk ?? "private",
     storage_path: payload.storage_path,
     original_name: payload.original_name ?? null,
     mime_type: payload.mime_type,
@@ -641,7 +646,6 @@ export default function MessageThreadPage() {
   const callRemoteStream = useAppSelector((state) => state.call.remoteStream);
   const isCallMuted = useAppSelector((state) => state.call.isMuted);
   const isCallCameraOff = useAppSelector((state) => state.call.isCameraOff);
-  const incomingCallPayload = useAppSelector((state) => state.call.incomingCallPayload);
   const {
     threads,
     filteredThreads,
@@ -728,8 +732,6 @@ export default function MessageThreadPage() {
   const [callMenuOpen, setCallMenuOpen] = useState(false);
   const [callActionLoading, setCallActionLoading] = useState<CallType | null>(null);
   const [callActionError, setCallActionError] = useState<string | null>(null);
-  const [incomingCallActionLoading, setIncomingCallActionLoading] = useState<"accept" | "decline" | null>(null);
-  const [incomingCallError, setIncomingCallError] = useState<string | null>(null);
   const [callDurationSeconds, setCallDurationSeconds] = useState(0);
   const [callNetworkQuality, setCallNetworkQuality] = useState<CallNetworkQuality>("unavailable");
   const [callReconnectState, setCallReconnectState] = useState<"idle" | "reconnecting">("idle");
@@ -859,8 +861,6 @@ export default function MessageThreadPage() {
     setCallMenuOpen(false);
     setCallActionLoading(null);
     setCallActionError(null);
-    setIncomingCallActionLoading(null);
-    setIncomingCallError(null);
     setCallDurationSeconds(0);
     setCallNetworkQuality("unavailable");
     setCallReconnectState("idle");
@@ -1677,31 +1677,6 @@ export default function MessageThreadPage() {
       }
     };
 
-    const handleIncomingCallEvent = (payload: CallEventPayload) => {
-      if (String(payload.conversation_id) !== threadId) {
-        return;
-      }
-
-      if (currentUserId !== null && Number(payload.call.receiver_id) !== Number(currentUserId)) {
-        return;
-      }
-
-      const dedupeKey = `call.invite:${threadId}:${payload.call.id}:${payload.sent_at ?? ""}`;
-      if (!rememberRealtimeEvent(dedupeKey)) {
-        return;
-      }
-
-      dispatch(
-        setIncomingCallPayload({
-          conversationId: Number(payload.conversation_id),
-          call: payload.call,
-        })
-      );
-      dispatch(setCurrentCall(payload.call));
-      dispatch(setCallStatus("incoming"));
-      setIncomingCallError(null);
-    };
-
     const handleAcceptedCallEvent = (payload: CallEventPayload) => {
       if (String(payload.conversation_id) !== threadId) {
         return;
@@ -1715,7 +1690,6 @@ export default function MessageThreadPage() {
       dispatch(setCurrentCall(payload.call));
       dispatch(setIncomingCallPayload(null));
       dispatch(setCallStatus("connecting"));
-      setIncomingCallError(null);
 
       if (currentUserId !== null && Number(payload.call.caller_id) === Number(currentUserId)) {
         void (async () => {
@@ -1743,7 +1717,6 @@ export default function MessageThreadPage() {
       dispatch(setCurrentCall(payload.call));
       dispatch(setIncomingCallPayload(null));
       dispatch(setCallStatus("ended"));
-      setIncomingCallActionLoading(null);
       cleanupWebRtcRuntime();
     };
 
@@ -1760,7 +1733,6 @@ export default function MessageThreadPage() {
       dispatch(setCurrentCall(payload.call));
       dispatch(setIncomingCallPayload(null));
       dispatch(setCallStatus("ended"));
-      setIncomingCallActionLoading(null);
       cleanupWebRtcRuntime();
     };
 
@@ -1778,7 +1750,6 @@ export default function MessageThreadPage() {
       dispatch(setIncomingCallPayload(null));
       dispatch(setCallStatus("ended"));
       dispatch(setCallError("Missed call."));
-      setIncomingCallActionLoading(null);
       cleanupWebRtcRuntime();
     };
 
@@ -2126,7 +2097,6 @@ export default function MessageThreadPage() {
       }
     );
 
-    channel.listen(".call.invite", handleIncomingCallEvent);
     channel.listen(".call.accepted", handleAcceptedCallEvent);
     channel.listen(".call.declined", handleDeclinedCallEvent);
     channel.listen(".call.ended", handleEndedCallEvent);
@@ -2158,7 +2128,6 @@ export default function MessageThreadPage() {
     });
 
     if (userChannel) {
-      userChannel.listen(".call.invite", handleIncomingCallEvent);
       userChannel.listen(".call.accepted", handleAcceptedCallEvent);
       userChannel.listen(".call.declined", handleDeclinedCallEvent);
       userChannel.listen(".call.ended", handleEndedCallEvent);
@@ -2544,7 +2513,7 @@ export default function MessageThreadPage() {
       const response = await sendMessage(threadId, {
         message_type: messageType,
         body: body || undefined,
-        attachments: hasAttachments ? readyAttachments : undefined,
+        attachments: hasAttachments ? readyAttachments.map((attachment) => ({ upload_token: attachment.upload_token })) : undefined,
         reply_to_message_id: replyingToMessage?.id ?? undefined,
         client_uid: clientUid,
       });
@@ -2582,7 +2551,7 @@ export default function MessageThreadPage() {
       const status = axiosError.response?.status;
 
       if (status === 401) {
-        setSendError("Session expired. Redirecting to login...");
+        setSendError("Session expired. Please sign in again to continue sending messages.");
       } else if (status === 403) {
         setSendError("Conversation request is pending. Please accept the request before sending.");
       } else if (status === 422) {
@@ -3469,11 +3438,6 @@ export default function MessageThreadPage() {
       return;
     }
 
-    if (callStatus === "incoming") {
-      playCallTone("incoming");
-      return;
-    }
-
     stopCallTone();
   }, [callStatus, playCallTone, stopCallTone]);
 
@@ -3646,66 +3610,6 @@ export default function MessageThreadPage() {
     }
   };
 
-  const handleAcceptIncomingCall = async () => {
-    if (!incomingCallPayload?.call) {
-      return;
-    }
-
-    if (!canAcceptIncomingCall) {
-      setIncomingCallError("You can't accept calls in this conversation right now.");
-      return;
-    }
-
-    setIncomingCallActionLoading("accept");
-    setIncomingCallError(null);
-    dispatch(setCallError(null));
-
-    try {
-      const response = await callSignaling.acceptCall(incomingCallPayload.call.id);
-      await ensureCallControllerWithLocalStream(response.data.id, response.data.call_type);
-      dispatch(setCurrentCall(response.data));
-      dispatch(setIncomingCallPayload(null));
-      dispatch(setCallStatus("connecting"));
-    } catch (error) {
-      const axiosError = error as AxiosError<ApiValidationErrorPayload>;
-      const firstValidationError = axiosError.response?.data?.errors
-        ? Object.values(axiosError.response.data.errors)[0]?.[0]
-        : null;
-      const message = firstValidationError || axiosError.response?.data?.message || "Failed to accept call.";
-      setIncomingCallError(message);
-      dispatch(setCallError(message));
-    } finally {
-      setIncomingCallActionLoading(null);
-    }
-  };
-
-  const handleDeclineIncomingCall = async () => {
-    if (!incomingCallPayload?.call) {
-      return;
-    }
-
-    setIncomingCallActionLoading("decline");
-    setIncomingCallError(null);
-    dispatch(setCallError(null));
-
-    try {
-      const response = await callSignaling.declineCall(incomingCallPayload.call.id);
-      dispatch(setCurrentCall(response.data));
-      dispatch(setIncomingCallPayload(null));
-      dispatch(setCallStatus("ended"));
-    } catch (error) {
-      const axiosError = error as AxiosError<ApiValidationErrorPayload>;
-      const firstValidationError = axiosError.response?.data?.errors
-        ? Object.values(axiosError.response.data.errors)[0]?.[0]
-        : null;
-      const message = firstValidationError || axiosError.response?.data?.message || "Failed to decline call.";
-      setIncomingCallError(message);
-      dispatch(setCallError(message));
-    } finally {
-      setIncomingCallActionLoading(null);
-    }
-  };
-
   const handleToggleMuteCall = () => {
     const nextMuted = !isCallMuted;
     setAudioTracksEnabled(callLocalStream, !nextMuted);
@@ -3758,7 +3662,13 @@ export default function MessageThreadPage() {
                 ...item,
                 status: "ready",
                 progress: 100,
-                payload: response.data,
+                payload: {
+                  ...response.data,
+                  metadata: {
+                    ...(response.data.metadata ?? {}),
+                    local_preview_url: item.previewUrl,
+                  },
+                },
                 error: null,
               }
             : item
@@ -3790,8 +3700,7 @@ export default function MessageThreadPage() {
     setAttachmentError(null);
 
     const newItems = files.map((file) => {
-      const isImage = file.type.startsWith("image/");
-      const previewUrl = isImage ? URL.createObjectURL(file) : null;
+      const previewUrl = URL.createObjectURL(file);
       const id = `att-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
       return {
@@ -4216,18 +4125,6 @@ export default function MessageThreadPage() {
     participant?.archived_at === null &&
     !isBlockedConversation;
   const removeModalCanEverywhere = removeModalMessage ? canRemoveEverywhereByPolicy(removeModalMessage) : false;
-  const hasIncomingCall = Boolean(incomingCallPayload?.call);
-  const canAcceptIncomingCall = canAcceptIncomingCallByRule({
-    participantState: participant?.participant_state,
-    participantArchivedAt: participant?.archived_at,
-    isBlockedConversation,
-    callStatus,
-  });
-  const incomingCallerName =
-    incomingCallPayload?.call.caller?.name?.trim() ||
-    activeThread?.name ||
-    "Someone";
-  const incomingCallTypeLabel = incomingCallPayload?.call.call_type === "video" ? "Video call" : "Audio call";
   const showActiveCallPanel = Boolean(currentCall) && callStatus !== "idle" && callStatus !== "incoming";
   const activeCallDisplayName =
     (currentUserId !== null && Number(currentCall?.caller_id) === Number(currentUserId)
@@ -5556,68 +5453,6 @@ export default function MessageThreadPage() {
                 {(imageViewer.index ?? 0) + 1} / {imageViewer.list.length}
               </p>
             ) : null}
-          </div>
-        </div>
-      )}
-
-      {hasIncomingCall && incomingCallPayload?.call && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-slate-950/50 backdrop-blur-sm" />
-          <div className="relative w-full max-w-sm rounded-[28px] border border-white/70 bg-white p-6 shadow-2xl">
-            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-emerald-50 text-emerald-600">
-              {incomingCallPayload.call.call_type === "video" ? (
-                <svg className="h-7 w-7" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 10l4.55-2.28A1 1 0 0121 8.62v6.76a1 1 0 01-1.45.9L15 14M5 19h8a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                </svg>
-              ) : (
-                <svg className="h-7 w-7" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 18a6 6 0 006-6V8a6 6 0 10-12 0v4a6 6 0 006 6zm0 0v3m-4 0h8" />
-                </svg>
-              )}
-            </div>
-            <p className="mt-5 text-center text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">
-              Incoming {incomingCallTypeLabel}
-            </p>
-            <h2 className="mt-2 text-center text-2xl font-semibold text-slate-900">{incomingCallerName}</h2>
-              <p className="mt-2 text-center text-sm text-slate-500">
-                {incomingCallPayload.call.call_type === "video"
-                  ? "They want to start a video call with you."
-                  : "They are calling you now."}
-              </p>
-
-              {!canAcceptIncomingCall && (
-                <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
-                  This conversation is not currently eligible for answering calls.
-                </div>
-              )}
-
-              {incomingCallError && (
-                <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
-                  {incomingCallError}
-                </div>
-            )}
-
-            <div className="mt-6 flex items-center justify-center gap-3">
-              <Button
-                type="button"
-                variant="danger"
-                className="min-w-28 rounded-full"
-                onClick={() => void handleDeclineIncomingCall()}
-                loading={incomingCallActionLoading === "decline"}
-                disabled={Boolean(incomingCallActionLoading)}
-              >
-                Decline
-              </Button>
-                <Button
-                  type="button"
-                  className="min-w-28 rounded-full bg-emerald-600 hover:bg-emerald-700"
-                  onClick={() => void handleAcceptIncomingCall()}
-                  loading={incomingCallActionLoading === "accept"}
-                  disabled={Boolean(incomingCallActionLoading) || !canAcceptIncomingCall}
-                >
-                  Accept
-                </Button>
-            </div>
           </div>
         </div>
       )}

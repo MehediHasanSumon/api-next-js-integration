@@ -327,6 +327,7 @@ export interface MessageListResponse {
 }
 
 export interface AttachmentPayload {
+  upload_token: string;
   attachment_type: AttachmentType;
   storage_disk?: string;
   storage_path: string;
@@ -341,13 +342,17 @@ export interface AttachmentPayload {
   metadata?: Record<string, unknown>;
 }
 
+export interface SendMessageAttachmentPayload {
+  upload_token: string;
+}
+
 export interface SendMessagePayload {
   message_type: MessageType;
   body?: string | null;
   metadata?: Record<string, unknown>;
   reply_to_message_id?: MessageId | null;
   client_uid?: string;
-  attachments?: AttachmentPayload[];
+  attachments?: SendMessageAttachmentPayload[];
 }
 
 export interface SendMessageResponse {
@@ -444,6 +449,7 @@ export interface TypingResponse {
 export interface ListConversationsParams {
   filter?: ConversationFilter;
   per_page?: number;
+  page?: number;
 }
 
 export interface ListMessagesParams {

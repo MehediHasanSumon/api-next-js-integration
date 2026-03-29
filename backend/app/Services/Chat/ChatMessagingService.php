@@ -19,7 +19,9 @@ use App\Models\User;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Validation\ValidationException;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 class ChatMessagingService
@@ -34,18 +36,31 @@ class ChatMessagingService
         ConversationParticipant $senderParticipant,
         array $payload
     ): Message {
-        $message = DB::transaction(function () use ($conversation, $sender, $senderParticipant, $payload) {
+        $messageType = (string) Arr::get($payload, 'message_type', 'text');
+        if ($messageType === 'system') {
+            throw ValidationException::withMessages([
+                'message_type' => ['System message type is reserved for server-generated events.'],
+            ]);
+        }
+
+        $verifiedAttachments = $this->resolveVerifiedAttachments(
+            Arr::get($payload, 'attachments', []),
+            $sender,
+            $conversation
+        );
+
+        $message = DB::transaction(function () use ($conversation, $sender, $senderParticipant, $payload, $messageType, $verifiedAttachments) {
             $message = Message::query()->create([
                 'conversation_id' => $conversation->id,
                 'sender_id' => $sender->id,
-                'message_type' => Arr::get($payload, 'message_type', 'text'),
+                'message_type' => $messageType,
                 'body' => Arr::get($payload, 'body'),
                 'metadata' => Arr::get($payload, 'metadata'),
                 'reply_to_message_id' => Arr::get($payload, 'reply_to_message_id'),
                 'client_uid' => Arr::get($payload, 'client_uid'),
             ]);
 
-            foreach (Arr::get($payload, 'attachments', []) as $attachment) {
+            foreach ($verifiedAttachments as $attachment) {
                 $message->attachments()->create([
                     'uploader_id' => $sender->id,
                     'attachment_type' => $attachment['attachment_type'],
@@ -85,6 +100,86 @@ class ChatMessagingService
         }
 
         return $message;
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $attachments
+     * @return array<int, array<string, mixed>>
+     */
+    private function resolveVerifiedAttachments(array $attachments, User $sender, Conversation $conversation): array
+    {
+        if ($attachments === []) {
+            return [];
+        }
+
+        $verified = [];
+
+        foreach ($attachments as $index => $attachment) {
+            $token = is_array($attachment) ? ($attachment['upload_token'] ?? null) : null;
+            if (!is_string($token) || trim($token) === '') {
+                throw ValidationException::withMessages([
+                    "attachments.$index.upload_token" => ['Upload token is required for each attachment.'],
+                ]);
+            }
+
+            try {
+                $decoded = json_decode(Crypt::decryptString($token), true, 512, JSON_THROW_ON_ERROR);
+            } catch (\Throwable) {
+                throw ValidationException::withMessages([
+                    "attachments.$index.upload_token" => ['Attachment token is invalid or has been tampered with.'],
+                ]);
+            }
+
+            if (!is_array($decoded)) {
+                throw ValidationException::withMessages([
+                    "attachments.$index.upload_token" => ['Attachment token payload is invalid.'],
+                ]);
+            }
+
+            if ((int) ($decoded['uploader_id'] ?? 0) !== (int) $sender->id) {
+                throw ValidationException::withMessages([
+                    "attachments.$index.upload_token" => ['Attachment does not belong to the current user.'],
+                ]);
+            }
+
+            if ((int) ($decoded['conversation_id'] ?? 0) !== (int) $conversation->id) {
+                throw ValidationException::withMessages([
+                    "attachments.$index.upload_token" => ['Attachment was not uploaded for this conversation.'],
+                ]);
+            }
+
+            $expiresAt = isset($decoded['expires_at']) ? strtotime((string) $decoded['expires_at']) : false;
+            if ($expiresAt === false || $expiresAt < time()) {
+                throw ValidationException::withMessages([
+                    "attachments.$index.upload_token" => ['Attachment token has expired. Please re-upload the file.'],
+                ]);
+            }
+
+            $storageDisk = (string) ($decoded['storage_disk'] ?? 'public');
+            $storagePath = (string) ($decoded['storage_path'] ?? '');
+            if ($storagePath === '' || !Storage::disk($storageDisk)->exists($storagePath)) {
+                throw ValidationException::withMessages([
+                    "attachments.$index.upload_token" => ['Uploaded attachment file could not be verified.'],
+                ]);
+            }
+
+            $verified[] = [
+                'attachment_type' => (string) ($decoded['attachment_type'] ?? 'file'),
+                'storage_disk' => $storageDisk,
+                'storage_path' => $storagePath,
+                'original_name' => isset($decoded['original_name']) ? (string) $decoded['original_name'] : null,
+                'mime_type' => (string) ($decoded['mime_type'] ?? 'application/octet-stream'),
+                'extension' => isset($decoded['extension']) && $decoded['extension'] !== null ? (string) $decoded['extension'] : null,
+                'size_bytes' => (int) ($decoded['size_bytes'] ?? 0),
+                'width' => isset($decoded['width']) && $decoded['width'] !== null ? (int) $decoded['width'] : null,
+                'height' => isset($decoded['height']) && $decoded['height'] !== null ? (int) $decoded['height'] : null,
+                'duration_ms' => isset($decoded['duration_ms']) && $decoded['duration_ms'] !== null ? (int) $decoded['duration_ms'] : null,
+                'checksum_sha256' => isset($decoded['checksum_sha256']) && $decoded['checksum_sha256'] !== null ? (string) $decoded['checksum_sha256'] : null,
+                'metadata' => null,
+            ];
+        }
+
+        return $verified;
     }
 
     public function forwardMessage(

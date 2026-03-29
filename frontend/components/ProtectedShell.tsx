@@ -4,6 +4,7 @@ import { useState } from "react";
 import Sidebar from "@/components/Sidebar";
 import Topbar from "@/components/Topbar";
 import Head from "@/components/Head";
+import GlobalIncomingCallHandler from "@/components/GlobalIncomingCallHandler";
 
 interface ProtectedShellProps {
   title: string;
@@ -25,6 +26,7 @@ export default function ProtectedShell({ title, description, showPageHeader = tr
         <div className="pointer-events-none absolute -top-32 -right-24 h-96 w-96 rounded-full bg-gradient-to-br from-sky-200 via-white to-transparent blur-3xl"></div>
         <div className="pointer-events-none absolute -bottom-32 -left-24 h-96 w-96 rounded-full bg-gradient-to-br from-amber-200 via-white to-transparent blur-3xl"></div>
 
+        <GlobalIncomingCallHandler />
         <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
         <Topbar isSidebarOpen={sidebarOpen} onMenuClick={() => setSidebarOpen(!sidebarOpen)} />
 

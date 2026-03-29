@@ -4,47 +4,35 @@ namespace App\Http\Controllers\Api\Chat;
 
 use App\Http\Controllers\Controller;
 use App\Models\Conversation;
+use App\Models\MessageAttachment;
 use App\Services\Chat\ConversationAccessService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Crypt;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class AttachmentController extends Controller
 {
     private const MAX_UPLOAD_SIZE_KB = 10240; // 10 MB
-    private const ALLOWED_MIME_TYPES = [
-        'image/jpeg',
-        'image/png',
-        'image/webp',
-        'image/gif',
-        'audio/mpeg',
-        'audio/wav',
-        'audio/webm',
-        'audio/x-webm',
-        'audio/ogg',
-        'audio/mp4',
-        'video/webm',
-        'application/pdf',
-        'text/plain',
-        'application/zip',
-        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    ];
-    private const ALLOWED_EXTENSIONS = [
-        'jpeg',
-        'jpg',
-        'png',
-        'webp',
-        'gif',
-        'mp3',
-        'wav',
-        'webm',
-        'ogg',
-        'm4a',
-        'pdf',
-        'txt',
-        'zip',
-        'docx',
-        'xlsx',
+    private const ALLOWED_MIME_EXTENSIONS = [
+        'image/jpeg' => ['jpeg', 'jpg'],
+        'image/png' => ['png'],
+        'image/webp' => ['webp'],
+        'image/gif' => ['gif'],
+        'audio/mpeg' => ['mp3'],
+        'audio/wav' => ['wav'],
+        'audio/webm' => ['webm'],
+        'audio/x-webm' => ['webm'],
+        'audio/ogg' => ['ogg'],
+        'audio/mp4' => ['m4a'],
+        'video/webm' => ['webm'],
+        'application/pdf' => ['pdf'],
+        'text/plain' => ['txt'],
+        'application/zip' => ['zip'],
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document' => ['docx'],
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' => ['xlsx'],
     ];
 
     public function store(Request $request, ConversationAccessService $accessService): JsonResponse
@@ -68,16 +56,17 @@ class AttachmentController extends Controller
         $extensionRaw = $file->getClientOriginalExtension();
         $extension = $extensionRaw !== '' ? strtolower($extensionRaw) : null;
 
-        $isAllowedMime = in_array($mimeType, self::ALLOWED_MIME_TYPES, true);
-        $isAllowedExtension = $extension !== null && in_array($extension, self::ALLOWED_EXTENSIONS, true);
+        $allowedExtensions = self::ALLOWED_MIME_EXTENSIONS[$mimeType] ?? null;
+        $isAllowedMime = is_array($allowedExtensions);
+        $isAllowedExtension = $extension !== null && $allowedExtensions !== null && in_array($extension, $allowedExtensions, true);
 
-        if (!$isAllowedMime && !$isAllowedExtension) {
+        if (!$isAllowedMime || !$isAllowedExtension) {
             throw ValidationException::withMessages([
-                'file' => ['The file field must be a file of type: ' . implode(', ', self::ALLOWED_MIME_TYPES) . '.'],
+                'file' => ['The uploaded file type is not allowed or does not match its file extension.'],
             ]);
         }
 
-        $storageDisk = 'public';
+        $storageDisk = 'private';
         $storagePath = $file->store('chat/uploads', $storageDisk);
         $isImage = str_starts_with($mimeType, 'image/');
         $isAudio = str_starts_with($mimeType, 'audio/');
@@ -104,6 +93,23 @@ class AttachmentController extends Controller
         return response()->json([
             'message' => 'Attachment uploaded successfully.',
             'data' => [
+                'upload_token' => Crypt::encryptString(json_encode([
+                    'conversation_id' => (int) $conversation->id,
+                    'uploader_id' => (int) $request->user()->id,
+                    'attachment_type' => $attachmentType,
+                    'storage_disk' => $storageDisk,
+                    'storage_path' => $storagePath,
+                    'original_name' => $file->getClientOriginalName(),
+                    'mime_type' => $mimeType,
+                    'extension' => $extension,
+                    'size_bytes' => (int) ($file->getSize() ?? 0),
+                    'width' => $width,
+                    'height' => $height,
+                    'duration_ms' => $durationMs,
+                    'checksum_sha256' => $checksum,
+                    'issued_at' => now()->toISOString(),
+                    'expires_at' => now()->addMinutes(30)->toISOString(),
+                ], JSON_THROW_ON_ERROR)),
                 'attachment_type' => $attachmentType,
                 'storage_disk' => $storageDisk,
                 'storage_path' => $storagePath,
@@ -117,5 +123,42 @@ class AttachmentController extends Controller
                 'checksum_sha256' => $checksum,
             ],
         ]);
+    }
+
+    public function show(
+        Request $request,
+        MessageAttachment $attachment,
+        ConversationAccessService $accessService
+    ): StreamedResponse {
+        $message = $attachment->message()->with('conversation')->firstOrFail();
+        $conversation = $message->conversation;
+
+        $accessService->requireVisibleParticipant($conversation, $request->user());
+
+        $diskName = $attachment->storage_disk ?: 'private';
+        $disk = Storage::disk($diskName);
+
+        if (!$disk->exists($attachment->storage_path)) {
+            abort(404, 'Attachment file not found.');
+        }
+
+        $headers = [];
+        if ($attachment->mime_type) {
+            $headers['Content-Type'] = $attachment->mime_type;
+        }
+
+        if ($request->boolean('download')) {
+            return $disk->download(
+                $attachment->storage_path,
+                $attachment->original_name ?: basename($attachment->storage_path),
+                $headers
+            );
+        }
+
+        return $disk->response(
+            $attachment->storage_path,
+            $attachment->original_name ?: basename($attachment->storage_path),
+            $headers
+        );
     }
 }

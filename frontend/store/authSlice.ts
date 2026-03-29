@@ -12,11 +12,13 @@ interface User {
 interface AuthState {
   user: User | null;
   loading: boolean;
+  sessionExpired: boolean;
 }
 
 const initialState: AuthState = {
   user: null,
   loading: true,
+  sessionExpired: false,
 };
 
 export const fetchUser = createAsyncThunk('auth/fetchUser', async () => {
@@ -31,7 +33,14 @@ export const logout = createAsyncThunk('auth/logout', async () => {
 const authSlice = createSlice({
   name: 'auth',
   initialState,
-  reducers: {},
+  reducers: {
+    markSessionExpired: (state) => {
+      state.sessionExpired = true;
+    },
+    clearSessionExpired: (state) => {
+      state.sessionExpired = false;
+    },
+  },
   extraReducers: (builder) => {
     builder
       .addCase(fetchUser.pending, (state) => {
@@ -40,15 +49,19 @@ const authSlice = createSlice({
       .addCase(fetchUser.fulfilled, (state, action) => {
         state.user = action.payload;
         state.loading = false;
+        state.sessionExpired = false;
       })
       .addCase(fetchUser.rejected, (state) => {
         state.user = null;
         state.loading = false;
+        state.sessionExpired = false;
       })
       .addCase(logout.fulfilled, (state) => {
         state.user = null;
+        state.sessionExpired = false;
       });
   },
 });
 
+export const { markSessionExpired, clearSessionExpired } = authSlice.actions;
 export default authSlice.reducer;

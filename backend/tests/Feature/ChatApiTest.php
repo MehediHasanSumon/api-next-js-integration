@@ -9,8 +9,10 @@ use App\Models\UserBlock;
 use App\Models\User;
 use Illuminate\Broadcasting\PrivateChannel;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Storage;
 use Spatie\Permission\Models\Role;
 
 use function Pest\Laravel\actingAs;
@@ -63,6 +65,159 @@ test('accepted participant can send a chat message', function () {
         ->assertJsonPath('data.body', 'Hello from test');
 
     expect($conversation->fresh()->last_message_id)->not->toBeNull();
+});
+
+test('accepted participant cannot forge a system message', function () {
+    $sender = User::factory()->create();
+    $receiver = User::factory()->create();
+    $conversation = createDirectConversation($sender, $receiver);
+
+    actingAs($sender)
+        ->postJson("/api/chat/conversations/{$conversation->id}/messages", [
+            'message_type' => 'system',
+            'body' => 'Fake system event',
+        ])
+        ->assertStatus(422)
+        ->assertJsonPath('errors.message_type.0', 'The selected message type is invalid.');
+
+    expect($conversation->messages()->count())->toBe(0);
+});
+
+test('accepted participant cannot forge attachment metadata without a verified upload token', function () {
+    $sender = User::factory()->create();
+    $receiver = User::factory()->create();
+    $conversation = createDirectConversation($sender, $receiver);
+
+    actingAs($sender)
+        ->postJson("/api/chat/conversations/{$conversation->id}/messages", [
+            'message_type' => 'file',
+            'attachments' => [
+                [
+                    'attachment_type' => 'file',
+                    'storage_disk' => 'public',
+                    'storage_path' => 'chat/uploads/forged.pdf',
+                    'original_name' => 'forged.pdf',
+                    'mime_type' => 'application/pdf',
+                    'size_bytes' => 1234,
+                ],
+            ],
+        ])
+        ->assertStatus(422)
+        ->assertJsonValidationErrors(['attachments.0.upload_token']);
+
+    expect($conversation->messages()->count())->toBe(0);
+});
+
+test('attachment upload rejects mismatched mime type and file extension', function () {
+    Storage::fake('private');
+
+    $sender = User::factory()->create();
+    $receiver = User::factory()->create();
+    $conversation = createDirectConversation($sender, $receiver);
+
+    $file = UploadedFile::fake()->create('mismatch.jpg', 10, 'application/pdf');
+
+    actingAs($sender)
+        ->post('/api/chat/attachments', [
+            'conversation_id' => $conversation->id,
+            'file' => $file,
+        ], [
+            'Accept' => 'application/json',
+        ])
+        ->assertStatus(422)
+        ->assertJsonPath('errors.file.0', 'The uploaded file type is not allowed or does not match its file extension.');
+});
+
+test('attachment upload stores chat files on the private disk', function () {
+    Storage::fake('private');
+
+    $sender = User::factory()->create();
+    $receiver = User::factory()->create();
+    $conversation = createDirectConversation($sender, $receiver);
+    $file = UploadedFile::fake()->create('notes.txt', 10, 'text/plain');
+
+    $response = actingAs($sender)
+        ->post('/api/chat/attachments', [
+            'conversation_id' => $conversation->id,
+            'file' => $file,
+        ], [
+            'Accept' => 'application/json',
+        ])
+        ->assertOk()
+        ->assertJsonPath('data.storage_disk', 'private');
+
+    $storagePath = (string) $response->json('data.storage_path');
+
+    expect($storagePath)->not->toBe('');
+    Storage::disk('private')->assertExists($storagePath);
+});
+
+test('conversation participant can access a private chat attachment through protected endpoint', function () {
+    Storage::fake('private');
+
+    $sender = User::factory()->create();
+    $receiver = User::factory()->create();
+    $conversation = createDirectConversation($sender, $receiver);
+    $storagePath = 'chat/uploads/private-demo.txt';
+
+    Storage::disk('private')->put($storagePath, 'top secret attachment');
+
+    $message = $conversation->messages()->create([
+        'sender_id' => $sender->id,
+        'message_type' => 'file',
+        'body' => null,
+    ]);
+
+    $attachment = $message->attachments()->create([
+        'uploader_id' => $sender->id,
+        'attachment_type' => 'file',
+        'storage_disk' => 'private',
+        'storage_path' => $storagePath,
+        'original_name' => 'private-demo.txt',
+        'mime_type' => 'text/plain',
+        'extension' => 'txt',
+        'size_bytes' => 21,
+    ]);
+
+    actingAs($receiver)
+        ->get("/api/chat/attachments/{$attachment->id}")
+        ->assertOk()
+        ->assertHeader('content-type', 'text/plain; charset=UTF-8');
+});
+
+test('outsider cannot access a private chat attachment', function () {
+    Storage::fake('private');
+
+    $sender = User::factory()->create();
+    $receiver = User::factory()->create();
+    $outsider = User::factory()->create();
+    $conversation = createDirectConversation($sender, $receiver);
+    $storagePath = 'chat/uploads/forbidden-demo.txt';
+
+    Storage::disk('private')->put($storagePath, 'private content');
+
+    $message = $conversation->messages()->create([
+        'sender_id' => $sender->id,
+        'message_type' => 'file',
+        'body' => null,
+    ]);
+
+    $attachment = $message->attachments()->create([
+        'uploader_id' => $sender->id,
+        'attachment_type' => 'file',
+        'storage_disk' => 'private',
+        'storage_path' => $storagePath,
+        'original_name' => 'forbidden-demo.txt',
+        'mime_type' => 'text/plain',
+        'extension' => 'txt',
+        'size_bytes' => 15,
+    ]);
+
+    actingAs($outsider)
+        ->getJson("/api/chat/attachments/{$attachment->id}")
+        ->assertForbidden()
+        ->assertJsonPath('status', 403)
+        ->assertJsonPath('error.code', 'FORBIDDEN');
 });
 
 test('mutation endpoint returns standardized 401 payload when unauthenticated', function () {

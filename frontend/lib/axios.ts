@@ -1,6 +1,7 @@
 import axios from "axios";
 import type { InternalAxiosRequestConfig } from "axios";
 import { ensureCsrfCookie } from "@/lib/csrf";
+import { emitSessionExpired } from "@/lib/session-events";
 
 type RetryableRequestConfig = InternalAxiosRequestConfig & {
   _retryAfterCsrf?: boolean;
@@ -47,8 +48,8 @@ api.interceptors.response.use(
       return api(originalRequest);
     }
 
-    if (error.response?.status === 401 && typeof window !== "undefined") {
-      window.location.href = "/login";
+    if (error.response?.status === 401) {
+      emitSessionExpired();
     }
     return Promise.reject(error);
   }

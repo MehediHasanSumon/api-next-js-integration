@@ -87,6 +87,17 @@ interface ChatUserPresenceUpdatedEvent {
   sent_at?: string;
 }
 
+type DirectoryFilter = Extract<ThreadFilter, "requests" | "archived" | "blocked" | "all">;
+
+const DIRECTORY_PAGE_SIZE = 50;
+
+const createEmptyDirectoryState = (): Record<DirectoryFilter, ConversationListItem[]> => ({
+  requests: [],
+  archived: [],
+  blocked: [],
+  all: [],
+});
+
 export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) => {
   const { activeThreadId } = options;
   const router = useRouter();
@@ -109,30 +120,84 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
   const [chatUserSearch, setChatUserSearch] = useState("");
   const [groupName, setGroupName] = useState("");
   const [selectedUserIds, setSelectedUserIds] = useState<number[]>([]);
-  const [conversationDirectory, setConversationDirectory] = useState<ConversationListItem[]>([]);
-  const [blockedConversationDirectory, setBlockedConversationDirectory] = useState<ConversationListItem[]>([]);
+  const [directoryState, setDirectoryState] = useState<Record<DirectoryFilter, ConversationListItem[]>>(
+    createEmptyDirectoryState
+  );
   const [presenceByUserId, setPresenceByUserId] = useState<Record<number, { isOnline: boolean; lastSeenAt: string | null }>>({});
 
   const threadsRef = useRef<ThreadItem[]>([]);
   const subscribedRef = useRef<Set<string>>(new Set());
   const userChannelRef = useRef<string | null>(null);
   const initialLoadRef = useRef(false);
+  const loadedDirectoriesRef = useRef<Set<DirectoryFilter>>(new Set());
 
   useEffect(() => {
     threadsRef.current = threads;
   }, [threads]);
 
+  const fetchConversationDirectory = useCallback(
+    async (targetFilter: DirectoryFilter): Promise<ConversationListItem[]> => {
+      let page = 1;
+      let hasNextPage = true;
+      const items: ConversationListItem[] = [];
+
+      while (hasNextPage) {
+        const response = await listConversations({
+          filter: targetFilter,
+          per_page: DIRECTORY_PAGE_SIZE,
+          page,
+        });
+
+        items.push(...response.data);
+        hasNextPage = Boolean(response.next_page_url);
+        page += 1;
+      }
+
+      setDirectoryState((previous) => ({
+        ...previous,
+        [targetFilter]: items,
+      }));
+      loadedDirectoriesRef.current.add(targetFilter);
+
+      return items;
+    },
+    []
+  );
+
+  const ensureDirectoryLoaded = useCallback(
+    async (targetFilter: DirectoryFilter, options?: { force?: boolean }): Promise<ConversationListItem[]> => {
+      if (!options?.force && loadedDirectoriesRef.current.has(targetFilter)) {
+        return directoryState[targetFilter];
+      }
+
+      return fetchConversationDirectory(targetFilter);
+    },
+    [directoryState, fetchConversationDirectory]
+  );
+
   const refreshThreads = useCallback(async (options?: { silent?: boolean }) => {
     await dispatch(fetchInboxThreads(options));
 
-    const [allResult, blockedResult] = await Promise.allSettled([
-      listConversations({ filter: "all", per_page: 100 }),
-      listConversations({ filter: "blocked", per_page: 100 }),
-    ]);
+    const loadedFilters = Array.from(loadedDirectoriesRef.current);
+    if (loadedFilters.length === 0) {
+      return;
+    }
 
-    setConversationDirectory(allResult.status === "fulfilled" ? allResult.value.data : []);
-    setBlockedConversationDirectory(blockedResult.status === "fulfilled" ? blockedResult.value.data : []);
-  }, [dispatch]);
+    const refreshResults = await Promise.allSettled(
+      loadedFilters.map((targetFilter) => fetchConversationDirectory(targetFilter))
+    );
+
+    refreshResults.forEach((result, index) => {
+      if (result.status === "rejected") {
+        const targetFilter = loadedFilters[index];
+        setDirectoryState((previous) => ({
+          ...previous,
+          [targetFilter]: [],
+        }));
+        loadedDirectoriesRef.current.delete(targetFilter);
+      }
+    });
+  }, [dispatch, fetchConversationDirectory]);
 
   useEffect(() => {
     if (initialLoadRef.current) {
@@ -144,31 +209,30 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
   }, [refreshThreads, threads.length]);
 
   useEffect(() => {
-    if (filter !== "blocked") {
+    if (filter !== "requests" && filter !== "archived" && filter !== "blocked" && filter !== "all") {
       return;
     }
 
-    void refreshThreads({ silent: true });
-  }, [filter, refreshThreads]);
+    void ensureDirectoryLoaded(filter);
+  }, [ensureDirectoryLoaded, filter]);
 
   const unreadCount = useMemo(() => threads.reduce((sum, thread) => sum + thread.unread, 0), [threads]);
-  const directoryThreads = useMemo(
-    () => conversationDirectory.map(mapConversationToThread),
-    [conversationDirectory]
-  );
-  const blockedThreads = useMemo(
-    () => blockedConversationDirectory.map(mapConversationToThread),
-    [blockedConversationDirectory]
+  const directoryThreadsByFilter = useMemo(
+    () => ({
+      requests: directoryState.requests.map(mapConversationToThread),
+      archived: directoryState.archived.map(mapConversationToThread),
+      blocked: directoryState.blocked.map(mapConversationToThread),
+      all: directoryState.all.map(mapConversationToThread),
+    }),
+    [directoryState]
   );
 
   const filteredThreads = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     const selectedSourceThreads =
-      filter === "blocked"
-        ? blockedThreads
-        : filter === "requests" || filter === "archived" || filter === "all"
-          ? directoryThreads
-          : threads;
+      filter === "requests" || filter === "archived" || filter === "blocked" || filter === "all"
+        ? directoryThreadsByFilter[filter]
+        : threads;
 
     return selectedSourceThreads.filter((thread) => {
       const matchQuery =
@@ -215,7 +279,7 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
 
       return true;
     });
-  }, [blockedThreads, directoryThreads, filter, presenceByUserId, searchQuery, threads]);
+  }, [directoryThreadsByFilter, filter, presenceByUserId, searchQuery, threads]);
 
   const acceptedDirectCounterpartIds = useMemo(() => {
     const ids = threads
@@ -344,15 +408,15 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
   }, []);
 
   const findDirectConversationId = useCallback(
-    (userId: number): string | null => {
-      const match = conversationDirectory.find(
+    (userId: number, conversations: ConversationListItem[]): string | null => {
+      const match = conversations.find(
         (conversation) =>
           conversation.type === "direct" && Number(conversation.counterpart?.id) === Number(userId)
       );
 
       return match ? String(match.conversation_id) : null;
     },
-    [conversationDirectory]
+    []
   );
 
   const handleStartConversation = useCallback(async () => {
@@ -366,7 +430,8 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
 
     try {
       if (selectedUserIds.length === 1) {
-        const existingConversationId = findDirectConversationId(selectedUserIds[0]);
+        const allConversations = await ensureDirectoryLoaded("all");
+        const existingConversationId = findDirectConversationId(selectedUserIds[0], allConversations);
         if (existingConversationId) {
           closeNewChatModal();
           router.push(`/message/t/${existingConversationId}`);
@@ -393,6 +458,7 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
     }
   }, [
     closeNewChatModal,
+    ensureDirectoryLoaded,
     findDirectConversationId,
     groupName,
     refreshThreads,
