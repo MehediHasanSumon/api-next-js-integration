@@ -45,6 +45,10 @@ api.interceptors.response.use(
     if (error.response?.status === 419 && originalRequest && !originalRequest._retryAfterCsrf) {
       originalRequest._retryAfterCsrf = true;
       await ensureCsrfCookie(true);
+      if (originalRequest.headers) {
+        delete originalRequest.headers["X-XSRF-TOKEN"];
+        delete originalRequest.headers["x-xsrf-token"];
+      }
       return api(originalRequest);
     }
 

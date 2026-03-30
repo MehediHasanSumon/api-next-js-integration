@@ -35,8 +35,12 @@ export const ensureCsrfCookie = async (forceRefresh = false): Promise<void> => {
       .get(`${sanctumBaseUrl}/sanctum/csrf-cookie`)
       .then(() => undefined)
       .catch((error) => {
-        csrfCookiePromise = null;
         throw error;
+      })
+      .finally(() => {
+        // Keep the promise only while the request is in flight so auth flows
+        // that regenerate the session do not keep reusing a stale CSRF token.
+        csrfCookiePromise = null;
       });
   }
 
