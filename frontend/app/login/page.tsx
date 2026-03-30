@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import api from "@/lib/axios";
 import { AxiosError } from "axios";
 import { normalizeEmail } from "@/lib/utils";
@@ -13,7 +12,6 @@ import Checkbox from "@/components/Checkbox";
 import Head from "@/components/Head";
 
 export default function Login() {
-  const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [rememberMe, setRememberMe] = useState(false);
@@ -47,10 +45,11 @@ export default function Login() {
         password,
         remember: rememberMe,
       });
+      await api.get("/user");
       const redirect = typeof window !== "undefined"
         ? new URLSearchParams(window.location.search).get("redirect")
         : null;
-      router.push(resolvePostLoginRedirect(redirect));
+      window.location.assign(resolvePostLoginRedirect(redirect));
     } catch (error) {
       const axiosError = error as AxiosError<{ errors?: Record<string, string[]>; message?: string }>;
       if (axiosError.response?.data?.errors) {

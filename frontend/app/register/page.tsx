@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import api from "@/lib/axios";
 import { AxiosError } from "axios";
 import { normalizeEmail } from "@/lib/utils";
@@ -11,7 +10,6 @@ import Button from "@/components/Button";
 import Head from "@/components/Head";
 
 export default function Register() {
-  const router = useRouter();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -52,7 +50,8 @@ export default function Register() {
         password,
         password_confirmation: confirmPassword,
       });
-      router.push("/dashboard");
+      await api.get("/user");
+      window.location.assign("/dashboard");
     } catch (error) {
       const axiosError = error as AxiosError<{ errors?: Record<string, string[]> }>;
       setErrors(axiosError.response?.data?.errors || { general: ["Network error. Please try again."] });
