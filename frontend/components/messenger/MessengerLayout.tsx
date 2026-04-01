@@ -19,8 +19,10 @@ export default function MessengerLayout({ showInfo, children }: MessengerLayoutP
     >
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_16%_12%,rgba(37,99,235,0.16),transparent_34%),radial-gradient(circle_at_82%_88%,rgba(14,165,233,0.14),transparent_38%),linear-gradient(180deg,rgba(255,255,255,0.25),rgba(248,250,252,0.12))]" />
       <div
-        className={`relative grid h-auto min-h-[520px] grid-cols-1 transition-[grid-template-columns] duration-300 ease-in-out md:h-[calc(100dvh-7.8rem)] md:min-h-[560px] md:grid-cols-[300px_minmax(0,1fr)] ${
-          showInfo ? "lg:grid-cols-[320px_minmax(0,1fr)_280px]" : "lg:grid-cols-[320px_minmax(0,1fr)]"
+        className={`relative flex min-h-[520px] flex-col md:h-[calc(100dvh-7.8rem)] md:min-h-[560px] md:flex-row md:[&>*]:min-h-0 md:[&>*:nth-child(1)]:w-[300px] md:[&>*:nth-child(1)]:flex-none md:[&>*:nth-child(2)]:min-w-0 md:[&>*:nth-child(2)]:flex-1 ${
+          showInfo
+            ? "lg:[&>*:nth-child(1)]:w-[320px] lg:[&>*:nth-child(3)]:w-[280px] lg:[&>*:nth-child(3)]:flex-none"
+            : "lg:[&>*:nth-child(1)]:w-[320px]"
         }`}
       >
         {children}
