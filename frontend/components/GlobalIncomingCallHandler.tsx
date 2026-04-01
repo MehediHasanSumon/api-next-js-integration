@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import Button from "@/components/Button";
+import { Lock, Phone, PhoneOff, X } from "lucide-react";
+import UserAvatar from "@/components/messenger/UserAvatar";
 import { getEcho } from "@/lib/echo";
 import callSignaling from "@/lib/call-signaling";
 import { createCallToneController, type CallToneController } from "@/lib/call-tones";
@@ -193,27 +194,37 @@ export default function GlobalIncomingCallHandler() {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-slate-950/50 backdrop-blur-sm" />
-      <div className="relative w-full max-w-sm rounded-[28px] border border-white/70 bg-white p-6 shadow-2xl">
-        <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-emerald-50 text-emerald-600">
-          {incomingCallPayload.call.call_type === "video" ? (
-            <svg className="h-7 w-7" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 10l4.55-2.28A1 1 0 0121 8.62v6.76a1 1 0 01-1.45.9L15 14M5 19h8a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-            </svg>
-          ) : (
-            <svg className="h-7 w-7" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 18a6 6 0 006-6V8a6 6 0 10-12 0v4a6 6 0 006 6zm0 0v3m-4 0h8" />
-            </svg>
-          )}
+      <button
+        type="button"
+        className="absolute inset-0 bg-slate-950/25 backdrop-blur-[2px]"
+        aria-label="Dismiss incoming call dialog"
+        onClick={() => void handleDeclineIncomingCall()}
+        disabled={Boolean(actionLoading)}
+      />
+      <div className="relative w-full max-w-[300px] rounded-[14px] border border-black/5 bg-white px-6 pb-5 pt-4 shadow-[0_18px_40px_-20px_rgba(15,23,42,0.35)]">
+        <div className="flex items-center justify-center">
+          <p className="text-[15px] font-semibold text-slate-900">Incoming call</p>
+          <button
+            type="button"
+            className="absolute right-4 top-4 inline-flex h-8 w-8 items-center justify-center rounded-full bg-slate-100 text-slate-700 transition hover:bg-slate-200 disabled:opacity-50"
+            aria-label="Close incoming call dialog"
+            onClick={() => void handleDeclineIncomingCall()}
+            disabled={Boolean(actionLoading)}
+          >
+            <X className="h-4 w-4" />
+          </button>
         </div>
-        <p className="mt-5 text-center text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">
-          Incoming {incomingCallTypeLabel}
-        </p>
-        <h2 className="mt-2 text-center text-2xl font-semibold text-slate-900">{incomingCallerName}</h2>
-        <p className="mt-2 text-center text-sm text-slate-500">
-          {incomingCallPayload.call.call_type === "video"
-            ? "They want to start a video call with you."
-            : "They are calling you now."}
+
+        <div className="mt-6 flex justify-center">
+          <UserAvatar name={incomingCallerName} size={56} showStatus={false} className="ring-2 ring-slate-100" />
+        </div>
+
+        <h2 className="mx-auto mt-4 max-w-[220px] text-center text-[18px] font-bold leading-[1.15] tracking-tight text-slate-950 sm:text-[20px]">
+          {incomingCallerName} is calling you
+        </h2>
+        <p className="mt-3 flex items-center justify-center gap-1.5 text-[12px] font-medium text-slate-500">
+          <Lock className="h-3 w-3" />
+          End-to-end encrypted
         </p>
 
         {incomingCallError && (
@@ -222,26 +233,32 @@ export default function GlobalIncomingCallHandler() {
           </div>
         )}
 
-        <div className="mt-6 flex items-center justify-center gap-3">
-          <Button
-            type="button"
-            variant="danger"
-            className="min-w-28 rounded-full"
-            onClick={() => void handleDeclineIncomingCall()}
-            loading={actionLoading === "decline"}
-            disabled={Boolean(actionLoading)}
-          >
-            Decline
-          </Button>
-          <Button
-            type="button"
-            className="min-w-28 rounded-full bg-emerald-600 hover:bg-emerald-700"
-            onClick={() => void handleAcceptIncomingCall()}
-            loading={actionLoading === "accept"}
-            disabled={Boolean(actionLoading)}
-          >
-            Accept
-          </Button>
+        <div className="mt-7 flex items-start justify-center gap-10">
+          <div className="flex flex-col items-center gap-2">
+            <button
+              type="button"
+              className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-red-500 text-white shadow-sm transition hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={() => void handleDeclineIncomingCall()}
+              disabled={Boolean(actionLoading)}
+              aria-label={`Decline ${incomingCallTypeLabel.toLowerCase()}`}
+            >
+              {actionLoading === "decline" ? <span className="text-[11px] font-semibold">...</span> : <PhoneOff className="h-5 w-5" />}
+            </button>
+            <span className="text-[13px] font-medium text-slate-800">Decline</span>
+          </div>
+
+          <div className="flex flex-col items-center gap-2">
+            <button
+              type="button"
+              className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-green-500 text-white shadow-sm transition hover:bg-green-600 disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={() => void handleAcceptIncomingCall()}
+              disabled={Boolean(actionLoading)}
+              aria-label={`Accept ${incomingCallTypeLabel.toLowerCase()}`}
+            >
+              {actionLoading === "accept" ? <span className="text-[11px] font-semibold">...</span> : <Phone className="h-5 w-5" />}
+            </button>
+            <span className="text-[13px] font-medium text-slate-800">Accept</span>
+          </div>
         </div>
       </div>
     </div>
