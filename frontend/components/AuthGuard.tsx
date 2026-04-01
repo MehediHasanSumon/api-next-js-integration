@@ -52,11 +52,25 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
   }, [clearHeartbeatInterval, sendPresencePing, user]);
 
   useEffect(() => {
-    dispatch(fetchUser()).unwrap().catch(() => router.push('/login'));
+    console.info("[auth][guard] validating session via /user");
+
+    dispatch(fetchUser())
+      .unwrap()
+      .then((resolvedUser) => {
+        console.info("[auth][guard] session valid", {
+          userId: resolvedUser?.id,
+          email: resolvedUser?.email,
+        });
+      })
+      .catch((error) => {
+        console.error("[auth][guard] session validation failed, redirecting to /login", error);
+        router.push('/login');
+      });
   }, [dispatch, router]);
 
   useEffect(() => {
     return subscribeToSessionExpired(() => {
+      console.warn("[auth][guard] session expired event received");
       dispatch(markSessionExpired());
     });
   }, [dispatch]);

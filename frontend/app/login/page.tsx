@@ -40,18 +40,38 @@ export default function Login() {
 
     setLoading(true);
     try {
+      console.info("[auth][login] submitting login request", {
+        email: normalizeEmail(email),
+        rememberMe,
+      });
+
       await api.post("/login", {
         email: normalizeEmail(email),
         password,
         remember: rememberMe,
       });
+
+      console.info("[auth][login] login request succeeded, fetching authenticated user");
+
       await api.get("/user");
+
       const redirect = typeof window !== "undefined"
         ? new URLSearchParams(window.location.search).get("redirect")
         : null;
+
+      console.info("[auth][login] authenticated user resolved, redirecting", {
+        redirect,
+        destination: resolvePostLoginRedirect(redirect),
+      });
+
       window.location.assign(resolvePostLoginRedirect(redirect));
     } catch (error) {
       const axiosError = error as AxiosError<{ errors?: Record<string, string[]>; message?: string }>;
+      console.error("[auth][login] login flow failed", {
+        status: axiosError.response?.status,
+        data: axiosError.response?.data,
+      });
+
       if (axiosError.response?.data?.errors) {
         setErrors(axiosError.response.data.errors);
       } else {
