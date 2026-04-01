@@ -19,7 +19,6 @@ const api = axios.create({
   },
 });
 
-// Request interceptor
 api.interceptors.request.use(
   async (config) => {
     const method = (config.method ?? "get").toLowerCase();
@@ -33,7 +32,7 @@ api.interceptors.request.use(
   },
   (error) => {
     return Promise.reject(error);
-  }
+  },
 );
 
 // Response interceptor
@@ -56,7 +55,7 @@ api.interceptors.response.use(
       emitSessionExpired();
     }
     return Promise.reject(error);
-  }
+  },
 );
 
 export default api;
