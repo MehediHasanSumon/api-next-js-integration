@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import { useAppSelector, useAppDispatch } from "@/store/hooks";
 import { logout } from "@/store/authSlice";
 import Button from "@/components/Button";
@@ -13,7 +12,6 @@ export default function Topbar({
   onMenuClick: () => void;
   isSidebarOpen: boolean;
 }) {
-  const router = useRouter();
   const dispatch = useAppDispatch();
   const user = useAppSelector((state) => state.auth.user);
   const [showProfile, setShowProfile] = useState(false);
@@ -31,7 +29,7 @@ export default function Topbar({
 
     try {
       await dispatch(logout()).unwrap();
-      router.replace("/login");
+      window.location.assign("/login");
     } finally {
       setLoggingOut(false);
       setShowProfile(false);

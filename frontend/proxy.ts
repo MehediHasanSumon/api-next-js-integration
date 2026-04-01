@@ -42,19 +42,6 @@ export async function proxy(request: NextRequest) {
     return NextResponse.redirect(loginUrl);
   }
 
-  // In production, Laravel Sanctum session validation can succeed in the
-  // browser but fail from this server-side proxy because the edge/server fetch
-  // does not perfectly reproduce the original first-party SPA request context.
-  // We only use cookie presence for route gating here and let the client-side
-  // AuthGuard perform the authoritative `/user` validation after navigation.
-  if (isGuestOnlyPath && hasSession) {
-    console.info("[auth][proxy] guest-only route with session cookie, redirecting to /dashboard", {
-      pathname,
-    });
-
-    return NextResponse.redirect(new URL("/dashboard", request.url));
-  }
-
   return NextResponse.next();
 }
 
