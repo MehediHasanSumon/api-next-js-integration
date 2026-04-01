@@ -6,6 +6,7 @@ import Button from "@/components/Button";
 import MessengerSidebar from "@/components/messenger/MessengerSidebar";
 import NewChatModal from "@/components/messenger/NewChatModal";
 import UserAvatar from "@/components/messenger/UserAvatar";
+import { MessengerChevronRightIcon } from "@/components/icons/messenger-icons";
 import type { ThreadItem } from "@/lib/chat-threads";
 import type { NewChatModalState, ThreadFilter } from "@/lib/use-messenger-threads";
 
@@ -99,12 +100,12 @@ export default function MessengerThreadsSidebar({
         searchValue={searchQuery}
         onSearchChange={onSearchChange}
         filters={
-          <div className="grid grid-cols-[1fr_1fr_1fr_auto] gap-1">
+          <div className="grid grid-cols-[1fr_1fr_1fr_auto] gap-1.5">
             <Button
               type="button"
               variant={filter === "inbox" ? "secondary" : "ghost"}
               size="sm"
-              className="h-8 rounded-full text-xs"
+              className="h-9 rounded-2xl text-xs"
               onClick={() => onFilterChange("inbox")}
             >
               Inbox
@@ -113,7 +114,7 @@ export default function MessengerThreadsSidebar({
               type="button"
               variant={filter === "unread" ? "secondary" : "ghost"}
               size="sm"
-              className="h-8 rounded-full text-xs"
+              className="h-9 rounded-2xl text-xs"
               onClick={() => onFilterChange("unread")}
             >
               Unread {unreadCount > 0 ? `(${unreadCount})` : ""}
@@ -122,7 +123,7 @@ export default function MessengerThreadsSidebar({
               type="button"
               variant={filter === "online" ? "secondary" : "ghost"}
               size="sm"
-              className="h-8 rounded-full text-xs"
+              className="h-9 rounded-2xl text-xs"
               onClick={() => onFilterChange("online")}
             >
               Online
@@ -132,7 +133,7 @@ export default function MessengerThreadsSidebar({
                 type="button"
                 variant={filter === "requests" || filter === "archived" || filter === "blocked" || filter === "all" ? "secondary" : "ghost"}
                 size="sm"
-                className="h-8 min-w-8 rounded-full px-2 text-xs"
+                className="h-9 min-w-9 rounded-2xl px-2 text-xs"
                 onClick={() => setMoreFiltersOpen((previous) => !previous)}
                 aria-label="Open more conversation filters"
               >
@@ -140,7 +141,7 @@ export default function MessengerThreadsSidebar({
               </Button>
 
               {moreFiltersOpen && (
-                <div className="absolute right-0 top-10 z-20 min-w-[148px] rounded-2xl border border-slate-200 bg-white p-1.5 shadow-xl">
+                <div className="absolute right-0 top-11 z-20 min-w-[156px] rounded-3xl border border-slate-200/80 bg-white/96 p-1.5 shadow-[0_26px_56px_-28px_rgba(15,23,42,0.42)] backdrop-blur">
                   <button
                     type="button"
                     className={`flex w-full rounded-xl px-3 py-2 text-left text-xs font-medium ${
@@ -224,8 +225,10 @@ export default function MessengerThreadsSidebar({
                 <Link
                   key={thread.id}
                   href={`/message/t/${thread.id}`}
-                  className={`flex items-start gap-3 rounded-2xl px-3 py-2 transition ${
-                    isActive ? "bg-slate-100" : "hover:bg-slate-100/80"
+                  className={`group flex items-start gap-3 rounded-[22px] border px-3.5 py-3 transition ${
+                    isActive
+                      ? "border-blue-200/80 bg-[linear-gradient(180deg,#f4f8ff,#eef4ff)] shadow-[0_22px_48px_-36px_rgba(37,99,235,0.55)]"
+                      : "border-transparent hover:border-slate-200/80 hover:bg-white/78"
                   }`}
                 >
                   <div className="mt-0.5 shrink-0">
@@ -234,17 +237,18 @@ export default function MessengerThreadsSidebar({
 
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-2">
-                      <p className="truncate text-sm font-semibold text-slate-900">{thread.name}</p>
-                      <span className="shrink-0 text-[11px] text-slate-500">{thread.lastTime}</span>
+                      <p className="truncate text-sm font-semibold tracking-tight text-slate-900">{thread.name}</p>
+                      <span className="shrink-0 text-[11px] font-medium text-slate-500">{thread.lastTime}</span>
                     </div>
                     <div className="mt-0.5 flex items-center justify-between gap-2">
-                      <p className="truncate text-xs text-slate-500">{thread.lastMessage}</p>
+                      <p className="truncate text-xs leading-5 text-slate-500">{thread.lastMessage}</p>
                       <div className="flex shrink-0 items-center gap-1">
                         {thread.unread > 0 && (
-                          <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-[color:var(--messenger-blue)] px-1.5 text-[11px] font-semibold text-white">
+                          <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-[color:var(--messenger-blue)] px-1.5 text-[11px] font-semibold text-white shadow-[0_10px_24px_-16px_rgba(37,99,235,0.95)]">
                             {thread.unread}
                           </span>
                         )}
+                        <MessengerChevronRightIcon className={`h-3.5 w-3.5 transition ${isActive ? "text-blue-500" : "text-slate-300 group-hover:text-slate-500"}`} />
                       </div>
                     </div>
                   </div>

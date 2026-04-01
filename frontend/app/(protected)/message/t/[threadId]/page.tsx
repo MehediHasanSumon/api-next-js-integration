@@ -1,12 +1,17 @@
 "use client";
 
-import Link from "next/link";
 import { ChangeEvent, FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import type { AxiosError } from "axios";
-import { CornerUpLeft, Forward, PencilLine, Search, SmilePlus, Trash2, X } from "lucide-react";
+import { CornerUpLeft, Forward, PencilLine, SmilePlus, Trash2 } from "lucide-react";
 import ProtectedShell from "@/components/ProtectedShell";
 import Button from "@/components/Button";
+import {
+  MessengerAttachmentIcon,
+  MessengerInfoIcon,
+  MessengerMicIcon,
+  MessengerVideoIcon,
+} from "@/components/icons/messenger-icons";
 import MessengerLayout from "@/components/messenger/MessengerLayout";
 import MessengerThreadsSidebar from "@/components/messenger/MessengerThreadsSidebar";
 import MessengerHeader from "@/components/messenger/MessengerHeader";
@@ -65,7 +70,6 @@ import {
 import { getPresenceStatus, pingPresence } from "@/lib/presence-api";
 import { formatLastSeen, getNowFromServerOffset, resolveServerClockOffsetMs } from "@/lib/presence-time";
 import { createWebRtcConnection, type WebRtcConnectionController } from "@/lib/webrtc";
-import { formatThreadRelativeTime, type ThreadItem } from "@/lib/chat-threads";
 import { getEcho } from "@/lib/echo";
 import { useMessengerThreads } from "@/lib/use-messenger-threads";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
@@ -82,555 +86,75 @@ import {
   setRemoteStream,
 } from "@/store/callSlice";
 import type {
-  Attachment,
   CallEventPayload,
   CallMissedEventPayload,
   WebRtcAnswerSignalEvent,
   WebRtcIceCandidatePayload,
   WebRtcIceCandidateSignalEvent,
   WebRtcOfferSignalEvent,
-  Conversation,
+  AttachmentPayload,
   ConversationListItem,
   ConversationShowResponse,
-  AttachmentPayload,
   CallType,
   Message,
   MessageRemovalMode,
-  ReactionAggregate,
   DirectoryUser,
 } from "@/types/chat";
-
-type DraftAttachmentStatus = "uploading" | "ready" | "error";
-
-interface DraftAttachmentItem {
-  id: string;
-  file: File;
-  previewUrl: string | null;
-  status: DraftAttachmentStatus;
-  progress: number;
-  error: string | null;
-  payload: AttachmentPayload | null;
-}
-
-interface ChatMessageSentEvent {
-  conversation_id: number | string;
-  message: Message;
-  sent_at?: string;
-}
-
-interface ChatTypingEvent {
-  conversation_id: number | string;
-  user_id: number;
-  is_typing: boolean;
-}
-
-interface ChatReadEvent {
-  conversation_id: number | string;
-  user_id: number;
-  last_read_message_id: number;
-  read_at: string;
-}
-
-interface ChatRequestUpdatedEvent {
-  conversation_id: number | string;
-  acted_by_user_id: number;
-  action: "accept" | "decline";
-}
-
-interface ChatUserPresenceUpdatedEvent {
-  user_id: number;
-  is_online: boolean;
-  last_seen_at: string | null;
-  sent_at: string;
-}
-
-interface ChatMessageReactionUpdatedEvent {
-  conversation_id: number | string;
-  message_id: number | string;
-  emoji: string;
-  action: "added" | "removed";
-  user_id: number;
-  reactions_total: number;
-  reaction_aggregates: ReactionAggregate[];
-  sent_at?: string;
-}
-
-interface ChatMessageEditedEvent {
-  conversation_id: number | string;
-  message_id: number | string;
-  body: string;
-  edited_at: string;
-  editor_user_id: number;
-}
-
-interface ChatMessageRemovedEvent {
-  conversation_id: number | string;
-  message_id: number | string;
-  mode: "for_you" | "everywhere";
-  actor_user_id: number;
-  removed_at: string;
-  message?: Message | null;
-}
-
-type EchoConnectionStatus = "connected" | "disconnected" | "connecting" | "reconnecting" | "failed";
-
-interface ApiValidationErrorPayload {
-  message?: string;
-  errors?: Record<string, string[]>;
-}
-
-const TYPING_IDLE_TIMEOUT_MS = 1500;
-const TYPING_TRUE_THROTTLE_MS = 800;
-const REMOVE_EVERYWHERE_WINDOW_MINUTES = 15;
-const MESSAGE_PAGE_LIMIT = 15;
-const LOAD_OLDER_THRESHOLD_PX = 120;
-const REACTION_CHOICES = ["👍", "❤️", "😂", "🔥", "😮", "😢"] as const;
-
-const clampNumber = (value: number, min: number, max: number): number => {
-  return Math.min(Math.max(value, min), max);
-};
-
-const getMessageDisplayText = (message: Message): string => {
-  const trimmedBody = message.body?.trim();
-  if (trimmedBody) {
-    return trimmedBody;
-  }
-
-  const callHistoryEvent =
-    message.metadata && typeof message.metadata === "object" ? message.metadata.call_history_event : undefined;
-
-  if (message.message_type === "system" && typeof callHistoryEvent === "string") {
-    return "Call update";
-  }
-
-  if (message.attachments && message.attachments.length > 0) {
-    return "Sent attachment";
-  }
-
-  return `[${message.message_type}]`;
-};
-
-const getMessagePreviewText = (message: Message): string => {
-  return getMessageDisplayText(message);
-};
-
-const getReplyPreviewText = (reply: Message["reply_to"]): string => {
-  if (!reply) {
-    return "";
-  }
-
-  return reply.body?.trim() || `[${reply.message_type}]`;
-};
-
-const getReadMessageId = (
-  participantLastReadMessageId: Message["id"] | null | undefined,
-  readEvent: ChatReadEvent | null,
-  participantUserId: number | null | undefined
-): number | null => {
-  const participantReadId = participantLastReadMessageId === null || participantLastReadMessageId === undefined
-    ? null
-    : toNumericId(participantLastReadMessageId);
-  const realtimeReadId =
-    readEvent && participantUserId !== null && participantUserId !== undefined && readEvent.user_id === participantUserId
-      ? toNumericId(readEvent.last_read_message_id)
-      : null;
-
-  if (participantReadId === null) {
-    return realtimeReadId;
-  }
-
-  if (realtimeReadId === null) {
-    return participantReadId;
-  }
-
-  return Math.max(participantReadId, realtimeReadId);
-};
-
-const hasRemovedForEveryoneFlag = (message: Message): boolean => {
-  if (message.deletion_state?.is_removed_for_everyone) {
-    return true;
-  }
-
-  if (!message.metadata) {
-    return false;
-  }
-
-  return message.metadata.removed_for_everyone === true || message.metadata.removed_for_everyone === 1;
-};
-
-const patchMessageById = (
-  list: Message[],
-  targetMessageId: string,
-  updater: (message: Message) => Message
-): Message[] => {
-  let changed = false;
-  const next = list.map((item) => {
-    if (String(item.id) !== targetMessageId) {
-      return item;
-    }
-
-    changed = true;
-    return updater(item);
-  });
-
-  if (!changed) {
-    return list;
-  }
-
-  return sortMessagesAscending(next);
-};
-
-const applyOptimisticReactionMutation = (
-  message: Message,
-  emoji: string
-): { nextMessage: Message; action: "added" | "removed" } => {
-  const current = Array.isArray(message.reaction_aggregates) ? message.reaction_aggregates : [];
-  const normalizedEmoji = emoji.trim();
-  const existing = current.find((item) => item.emoji === normalizedEmoji);
-
-  let action: "added" | "removed" = "added";
-  let nextAggregates: ReactionAggregate[] = [];
-
-  if (existing?.reacted_by_me) {
-    action = "removed";
-    nextAggregates = current
-      .map((item) => {
-        if (item.emoji !== normalizedEmoji) {
-          return item;
-        }
-
-        const nextCount = Math.max(0, item.count - 1);
-        if (nextCount === 0) {
-          return null;
-        }
-
-        return {
-          ...item,
-          count: nextCount,
-          reacted_by_me: false,
-        };
-      })
-      .filter((item): item is ReactionAggregate => item !== null);
-  } else {
-    nextAggregates = current.map((item) => ({ ...item }));
-    const index = nextAggregates.findIndex((item) => item.emoji === normalizedEmoji);
-
-    if (index === -1) {
-      nextAggregates.push({
-        emoji: normalizedEmoji,
-        count: 1,
-        reacted_by_me: true,
-      });
-    } else {
-      nextAggregates[index] = {
-        ...nextAggregates[index],
-        count: nextAggregates[index].count + 1,
-        reacted_by_me: true,
-      };
-    }
-  }
-
-  nextAggregates.sort((a, b) => a.emoji.localeCompare(b.emoji));
-  const nextTotal = nextAggregates.reduce((sum, item) => sum + item.count, 0);
-
-  return {
-    action,
-    nextMessage: {
-      ...message,
-      reaction_aggregates: nextAggregates,
-      reactions_total: nextTotal,
-    },
-  };
-};
-
-const buildTombstoneMessage = (message: Message, actorUserId: number): Message => {
-  const previousMetadata = message.metadata && typeof message.metadata === "object" ? message.metadata : {};
-
-  return {
-    ...message,
-    message_type: "system",
-    body: "This message was removed.",
-    attachments: [],
-    metadata: {
-      ...previousMetadata,
-      removed_for_everyone: true,
-      removed_for_everyone_by: actorUserId,
-      removed_for_everyone_at: new Date().toISOString(),
-      tombstone_text: "This message was removed.",
-    },
-    deletion_state: {
-      is_removed_for_everyone: true,
-      removed_for_everyone_by: actorUserId,
-      removed_for_everyone_at: new Date().toISOString(),
-      tombstone_text: "This message was removed.",
-      original_message_type: message.message_type,
-    },
-    reaction_aggregates: [],
-    reactions_total: 0,
-  };
-};
-const formatFileSize = (size: number): string => {
-  if (size < 1024) {
-    return `${size} B`;
-  }
-  if (size < 1024 * 1024) {
-    return `${Math.round(size / 1024)} KB`;
-  }
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-};
-
-const resolveAttachmentUrl = (attachment: Attachment | AttachmentPayload): string | null => {
-  const metadata = attachment.metadata;
-  const localPreviewUrl =
-    metadata && typeof metadata === "object" && typeof metadata.local_preview_url === "string"
-      ? metadata.local_preview_url
-      : null;
-
-  if (localPreviewUrl) {
-    return localPreviewUrl;
-  }
-
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL;
-  if (!apiUrl) {
-    return null;
-  }
-
-  const attachmentId = "id" in attachment ? attachment.id : null;
-
-  if (attachmentId === null || attachmentId === undefined || attachmentId === "") {
-    return null;
-  }
-
-  return `${apiUrl.replace(/\/$/, "")}/chat/attachments/${attachmentId}`;
-};
-
-const resolveAvatarUrl = (avatarPath: string | null): string | null => {
-  if (!avatarPath) {
-    return null;
-  }
-
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL;
-  if (!apiUrl) {
-    return null;
-  }
-
-  const baseUrl = apiUrl.replace(/\/api\/?$/, "");
-  const normalizedPath = avatarPath.replace(/^public\//, "").replace(/^\/+/, "");
-
-  return `${baseUrl}/storage/${normalizedPath}`;
-};
-
-const mapAttachmentPayloadToAttachment = (
-  payload: AttachmentPayload,
-  messageId: string,
-  fallbackUserId: number | null
-): Attachment => {
-  const createdAt = new Date().toISOString();
-
-  return {
-    id: `temp-${messageId}-${payload.storage_path}`,
-    message_id: messageId,
-    uploader_id: fallbackUserId,
-    attachment_type: payload.attachment_type,
-    storage_disk: payload.storage_disk ?? "private",
-    storage_path: payload.storage_path,
-    original_name: payload.original_name ?? null,
-    mime_type: payload.mime_type,
-    extension: payload.extension ?? null,
-    size_bytes: payload.size_bytes,
-    width: payload.width ?? null,
-    height: payload.height ?? null,
-    duration_ms: payload.duration_ms ?? null,
-    checksum_sha256: payload.checksum_sha256 ?? null,
-    metadata: payload.metadata ?? null,
-    created_at: createdAt,
-    updated_at: createdAt,
-  };
-};
-
-const formatRelativeTime = (rawDate: string | null): string => {
-  if (!rawDate) {
-    return "-";
-  }
-
-  const date = new Date(rawDate);
-  if (Number.isNaN(date.getTime())) {
-    return "-";
-  }
-
-  const diffMs = Date.now() - date.getTime();
-  const minute = 60 * 1000;
-  const hour = 60 * minute;
-  const day = 24 * hour;
-
-  if (diffMs < hour) {
-    return `${Math.max(1, Math.floor(diffMs / minute))}m`;
-  }
-
-  if (diffMs < day) {
-    return `${Math.floor(diffMs / hour)}h`;
-  }
-
-  if (diffMs < day * 2) {
-    return "Yesterday";
-  }
-
-  return date.toLocaleDateString();
-};
-
-const formatClockTime = (rawDate: string): string => {
-  const date = new Date(rawDate);
-  if (Number.isNaN(date.getTime())) {
-    return "-";
-  }
-
-  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-};
-
-const isFutureIsoDate = (value: string | null | undefined): boolean => {
-  if (!value) {
-    return false;
-  }
-
-  const timestamp = new Date(value).getTime();
-  return Number.isFinite(timestamp) && timestamp > Date.now();
-};
-
-const buildMuteUntilIso = (durationMs: number): string => {
-  return new Date(Date.now() + durationMs).toISOString();
-};
-
-const formatMuteUntil = (value: string | null): string => {
-  if (!value) {
-    return "";
-  }
-
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return "";
-  }
-
-  return date.toLocaleString([], {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-};
-
-const MAX_RECORDING_SECONDS = 120;
-const MUTE_PRESETS = [
-  { id: "15m", label: "For 15 minutes", durationMs: 15 * 60 * 1000 },
-  { id: "1h", label: "For 1 Hour", durationMs: 60 * 60 * 1000 },
-  { id: "8h", label: "For 8 Hours", durationMs: 8 * 60 * 60 * 1000 },
-  { id: "24h", label: "For 24 Hours", durationMs: 24 * 60 * 60 * 1000 },
-  { id: "forever", label: "Until I turn it back on", durationMs: 10 * 365 * 24 * 60 * 60 * 1000 },
-] as const;
-
-const mapConversationDetailToThread = (
-  conversation: Conversation,
-  participant: ConversationShowResponse["participant"] | null,
-  currentUserId: number | null
-): ThreadItem => {
-  const participants = conversation.participants ?? [];
-  const counterpart =
-    conversation.type === "direct" && currentUserId !== null
-      ? participants.find((item) => item.user && Number(item.user_id) !== Number(currentUserId))?.user ?? null
-      : null;
-  const counterpartName = counterpart?.name?.trim();
-  const counterpartEmail = counterpart?.email;
-
-  return {
-    id: String(conversation.id),
-    name: conversation.title?.trim() || counterpartName || `Conversation #${conversation.id}`,
-    handle: counterpartEmail ? `@${counterpartEmail.split("@")[0]}` : `#${conversation.id}`,
-    avatarPath: conversation.avatar_path,
-    lastMessage:
-      conversation.last_message?.body?.trim() ||
-      (conversation.last_message ? `[${conversation.last_message.message_type}]` : "No messages yet"),
-    lastTime: formatThreadRelativeTime(conversation.last_message?.created_at ?? conversation.last_message_at),
-    unread: participant?.unread_count ?? 0,
-    participantState: participant?.participant_state ?? "accepted",
-    archivedAt: participant?.archived_at ?? null,
-    isBlocked: false,
-    type: conversation.type ?? null,
-    counterpartId: null,
-  };
-};
-
-const toNumericId = (value: string | number): number | null => {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
-};
-
-const sortMessagesAscending = (list: Message[]): Message[] => {
-  return [...list].sort((a, b) => {
-    const aId = toNumericId(a.id);
-    const bId = toNumericId(b.id);
-
-    if (aId !== null && bId !== null) {
-      return aId - bId;
-    }
-
-    const aTime = new Date(a.created_at).getTime();
-    const bTime = new Date(b.created_at).getTime();
-
-    if (Number.isFinite(aTime) && Number.isFinite(bTime) && aTime !== bTime) {
-      return aTime - bTime;
-    }
-
-    return String(a.id).localeCompare(String(b.id));
-  });
-};
-
-const isSameMessageIdentity = (left: Message, right: Message): boolean => {
-  if (String(left.id) === String(right.id)) {
-    return true;
-  }
-
-  if (left.client_uid && right.client_uid) {
-    return left.client_uid === right.client_uid;
-  }
-
-  return false;
-};
-
-const upsertMessageByIdentity = (list: Message[], message: Message): Message[] => {
-  const index = list.findIndex((item) => isSameMessageIdentity(item, message));
-
-  if (index === -1) {
-    return sortMessagesAscending([...list, message]);
-  }
-
-  const next = [...list];
-  next[index] = message;
-  return sortMessagesAscending(next);
-};
-
-const getMessageIdAsNumber = (message: Message | undefined): number | null => {
-  if (!message) {
-    return null;
-  }
-
-  const parsed = toNumericId(message.id);
-  if (parsed === null) {
-    return null;
-  }
-
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return null;
-  }
-
-  return parsed;
-};
-
-const generateClientUid = (): string => {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return crypto.randomUUID();
-  }
-
-  return `client-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-};
+import {
+  type ApiValidationErrorPayload,
+  type ChatMessageEditedEvent,
+  type ChatMessageReactionUpdatedEvent,
+  type ChatMessageRemovedEvent,
+  type ChatMessageSentEvent,
+  type ChatReadEvent,
+  type ChatRequestUpdatedEvent,
+  type ChatTypingEvent,
+  type ChatUserPresenceUpdatedEvent,
+  type DraftAttachmentStatus,
+  type DraftAttachmentItem,
+  type EchoConnectionStatus,
+  LOAD_OLDER_THRESHOLD_PX,
+  MAX_RECORDING_SECONDS,
+  MESSAGE_PAGE_LIMIT,
+  MUTE_PRESETS,
+  REACTION_CHOICES,
+  REMOVE_EVERYWHERE_WINDOW_MINUTES,
+  TYPING_IDLE_TIMEOUT_MS,
+  TYPING_TRUE_THROTTLE_MS,
+  applyOptimisticReactionMutation,
+  buildMuteUntilIso,
+  buildTombstoneMessage,
+  clampNumber,
+  formatClockTime,
+  formatFileSize,
+  formatMuteUntil,
+  generateClientUid,
+  getMessageDisplayText,
+  getMessageIdAsNumber,
+  getMessagePreviewText,
+  getReadMessageId,
+  getReplyPreviewText,
+  hasRemovedForEveryoneFlag,
+  isFutureIsoDate,
+  mapAttachmentPayloadToAttachment,
+  mapConversationDetailToThread,
+  patchMessageById,
+  resolveAttachmentUrl,
+  resolveAvatarUrl,
+  sortMessagesAscending,
+  toNumericId,
+  upsertMessageByIdentity,
+} from "./thread-page-helpers";
+import {
+  ThreadActiveCallPanel,
+  ThreadForwardModal,
+  ThreadImageViewer,
+  ThreadMembersModal,
+  ThreadMuteConversationModal,
+  ThreadReactionPickerModal,
+  ThreadRemoveMessageModal,
+  type ThreadImageViewerState,
+} from "./thread-page-overlays";
 
 export default function MessageThreadPage() {
   const params = useParams<{ threadId: string }>();
@@ -720,13 +244,7 @@ export default function MessageThreadPage() {
   const [forwardModalLoading, setForwardModalLoading] = useState(false);
   const [forwardTargets, setForwardTargets] = useState<ConversationListItem[]>([]);
   const [forwardTargetsLoading, setForwardTargetsLoading] = useState(false);
-  const [imageViewer, setImageViewer] = useState<{
-    url: string;
-    name: string;
-    mode: "single" | "gallery";
-    list?: { url: string; name: string }[];
-    index?: number;
-  } | null>(null);
+  const [imageViewer, setImageViewer] = useState<ThreadImageViewerState | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [callMenuOpen, setCallMenuOpen] = useState(false);
@@ -4204,12 +3722,10 @@ export default function MessageThreadPage() {
                         onClick={() => setCallMenuOpen((previous) => !previous)}
                         disabled={Boolean(callActionLoading)}
                       >
-                        <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 10l4.55-2.28A1 1 0 0121 8.62v6.76a1 1 0 01-1.45.9L15 14M5 19h8a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                        </svg>
+                        <MessengerVideoIcon className="h-5 w-5" />
                       </Button>
                       {callMenuOpen && (
-                        <div className="absolute right-0 top-12 z-20 w-44 rounded-2xl border border-slate-200 bg-white p-2 shadow-xl">
+                        <div className="absolute right-0 top-12 z-[70] w-44 rounded-2xl border border-slate-200 bg-white p-2 shadow-xl">
                           <button
                             type="button"
                             className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
@@ -4217,9 +3733,7 @@ export default function MessageThreadPage() {
                             disabled={Boolean(callActionLoading)}
                           >
                             <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-emerald-50 text-emerald-600">
-                              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 18a6 6 0 006-6V8a6 6 0 10-12 0v4a6 6 0 006 6zm0 0v3m-4 0h8" />
-                              </svg>
+                              <MessengerMicIcon className="h-4 w-4" />
                             </span>
                             <span>{callActionLoading === "audio" ? "Starting..." : "Audio call"}</span>
                           </button>
@@ -4230,9 +3744,7 @@ export default function MessageThreadPage() {
                             disabled={Boolean(callActionLoading)}
                           >
                             <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-sky-50 text-sky-600">
-                              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 10l4.55-2.28A1 1 0 0121 8.62v6.76a1 1 0 01-1.45.9L15 14M5 19h8a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                              </svg>
+                              <MessengerVideoIcon className="h-4 w-4" />
                             </span>
                             <span>{callActionLoading === "video" ? "Starting..." : "Video call"}</span>
                           </button>
@@ -4248,9 +3760,7 @@ export default function MessageThreadPage() {
                     onClick={() => setShowInfoPanel((previous) => !previous)}
                     aria-label="Toggle contact info"
                   >
-                    <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
+                    <MessengerInfoIcon className="h-5 w-5" />
                   </Button>
                 </>
               }
@@ -4283,7 +3793,7 @@ export default function MessageThreadPage() {
             <div
               ref={messageViewportRef}
               onScroll={handleMessageScroll}
-              className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4"
+              className="relative z-0 min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4"
             >
               {isLoading ? (
                 <div className="mx-auto mt-10 max-w-sm rounded-xl border border-slate-200 bg-white px-4 py-3 text-center text-sm text-slate-600">
@@ -4710,9 +4220,7 @@ export default function MessageThreadPage() {
                       }
                       aria-label="Attach file"
                     >
-                      <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14.752 11.168l-6.518 6.518a4 4 0 105.657 5.657l7.07-7.071a6 6 0 10-8.485-8.485l-7.07 7.071a8 8 0 1011.314 11.314l6.518-6.518" />
-                      </svg>
+                      <MessengerAttachmentIcon className="h-5 w-5" />
                     </Button>
                     <Button
                       type="button"
@@ -4723,14 +4231,7 @@ export default function MessageThreadPage() {
                       disabled={!canSendMessage || isLoading || isRecording || Boolean(editingMessageId) || editingLoading}
                       aria-label="Record voice message"
                     >
-                      <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth="2"
-                          d="M12 1a3 3 0 013 3v8a3 3 0 11-6 0V4a3 3 0 013-3zm-5 11a5 5 0 0010 0m-5 5v4m-3 0h6"
-                        />
-                      </svg>
+                      <MessengerMicIcon className="h-5 w-5" />
                     </Button>
                     <input
                       ref={composerInputRef}
@@ -5083,604 +4584,95 @@ export default function MessageThreadPage() {
           </MessengerInfoPanel>
       </MessengerLayout>
 
-      {muteModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <button
-            type="button"
-            className="absolute inset-0 bg-slate-900/50"
-            aria-label="Close mute modal"
-            onClick={muteActionLoading ? undefined : () => setMuteModalOpen(false)}
-          />
-          <div className="relative w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
-            <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50/80 px-5 py-3.5">
-              <h2 className="text-base font-semibold text-slate-900">Mute conversation</h2>
-              <button
-                type="button"
-                className="flex h-8 w-8 items-center justify-center rounded-full bg-white text-slate-500 ring-1 ring-slate-200 transition hover:bg-slate-100"
-                aria-label="Close mute modal"
-                onClick={muteActionLoading ? undefined : () => setMuteModalOpen(false)}
-                disabled={muteActionLoading}
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
+      <ThreadMuteConversationModal
+        open={muteModalOpen}
+        presets={MUTE_PRESETS}
+        selectedPresetId={selectedMutePresetId}
+        loading={muteActionLoading}
+        error={muteActionError}
+        onClose={() => setMuteModalOpen(false)}
+        onPresetChange={(presetId) => setSelectedMutePresetId(presetId as (typeof MUTE_PRESETS)[number]["id"])}
+        onConfirm={() => void handleConfirmMute()}
+      />
 
-            <div className="px-6 pb-6 pt-5">
-              <div className="space-y-2">
-                {MUTE_PRESETS.map((preset) => {
-                  const checked = selectedMutePresetId === preset.id;
+      <ThreadReactionPickerModal
+        open={Boolean(reactionModalMessage)}
+        reactionChoices={REACTION_CHOICES}
+        reactionPopoverPosition={reactionPopoverPosition}
+        reactionMutationLoadingKey={reactionMutationLoadingKey}
+        reactionMessageId={reactionModalMessage?.id ?? null}
+        onClose={closeReactionModal}
+        onReact={(emoji) => void handleReactionToggle(emoji)}
+      />
 
-                  return (
-                    <label
-                      key={preset.id}
-                      className={`flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3 transition ${
-                        checked
-                          ? "border-blue-200 bg-blue-50/70"
-                          : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50"
-                      }`}
-                    >
-                      <input
-                        type="radio"
-                        name="mute-duration"
-                        value={preset.id}
-                        checked={checked}
-                        onChange={() => setSelectedMutePresetId(preset.id)}
-                        disabled={muteActionLoading}
-                        className="h-5 w-5 shrink-0 accent-blue-600"
-                      />
-                      <span className={`text-sm ${checked ? "font-semibold text-slate-900" : "font-medium text-slate-700"}`}>
-                        {preset.label}
-                      </span>
-                    </label>
-                  );
-                })}
-              </div>
+      <ThreadForwardModal
+        open={Boolean(forwardModalMessage)}
+        loading={forwardModalLoading}
+        search={forwardSearch}
+        onSearchChange={setForwardSearch}
+        targetsLoading={forwardTargetsLoading}
+        filteredTargets={filteredForwardTargets}
+        forwardSendingId={forwardSendingId}
+        error={forwardModalError}
+        onClose={closeForwardModal}
+        onSend={(targetId) => void handleQuickForward(targetId)}
+        resolveAvatarUrl={resolveAvatarUrl}
+        presenceByUserIdMap={presenceByUserIdMap}
+      />
 
-              <p className="mt-3 text-xs leading-5 text-slate-600">
-                Chat windows will stay closed, and you won&apos;t get push notifications on your devices.
-              </p>
+      <ThreadMembersModal
+        open={membersModalOpen}
+        memberSaving={memberSaving}
+        memberLoading={memberLoading}
+        memberError={memberError}
+        memberSearch={memberSearch}
+        onSearchChange={setMemberSearch}
+        filteredMemberDirectory={filteredMemberDirectory}
+        memberSelection={memberSelection}
+        presenceByUserIdMap={presenceByUserIdMap}
+        memberActionError={memberActionError}
+        onClose={closeMembersModal}
+        onToggleMemberSelection={toggleMemberSelection}
+        onAddMembers={() => void handleAddMembers()}
+      />
 
-              {muteActionError && <p className="mt-3 text-xs text-rose-600">{muteActionError}</p>}
+      <ThreadImageViewer
+        imageViewer={imageViewer}
+        onClose={closeImageViewer}
+        onPrevious={goToPreviousImage}
+        onNext={goToNextImage}
+      />
 
-              <div className="mt-6 grid grid-cols-2 gap-3 border-t border-slate-200 pt-4">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => setMuteModalOpen(false)}
-                  disabled={muteActionLoading}
-                  className="h-10 rounded-xl border-slate-300 bg-slate-100 text-xs font-semibold text-slate-700 hover:bg-slate-200"
-                >
-                  Cancel
-                </Button>
-                <Button
-                  type="button"
-                  onClick={() => void handleConfirmMute()}
-                  disabled={muteActionLoading}
-                  className="h-10 rounded-xl border-0 bg-blue-600 text-xs font-semibold text-white hover:bg-blue-700"
-                >
-                  {muteActionLoading ? "Muting..." : "Mute"}
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      <ThreadActiveCallPanel
+        currentCall={currentCall}
+        show={showActiveCallPanel}
+        activeCallDisplayName={activeCallDisplayName}
+        activeCallStatusLabel={activeCallStatusLabel}
+        showActiveCallDuration={showActiveCallDuration}
+        activeCallDurationLabel={activeCallDurationLabel}
+        activeCallNetworkToneClassName={activeCallNetworkToneClassName}
+        activeCallNetworkLabel={activeCallNetworkLabel}
+        callRemoteStream={callRemoteStream}
+        callLocalStream={callLocalStream}
+        isCallCameraOff={isCallCameraOff}
+        isCallMuted={isCallMuted}
+        activeCallRemoteVideoRef={activeCallRemoteVideoRef}
+        activeCallLocalVideoRef={activeCallLocalVideoRef}
+        onEndCall={() => void handleEndActiveCall()}
+        onToggleMute={handleToggleMuteCall}
+        onToggleCamera={handleToggleCameraCall}
+      />
 
-      {reactionModalMessage && (
-        <div className="fixed inset-0 z-50">
-          <button
-            type="button"
-            className="absolute inset-0 bg-slate-900/30"
-            aria-label="Close reaction modal"
-            onClick={reactionMutationLoadingKey ? undefined : closeReactionModal}
-          />
-          <div
-            className="absolute z-50 w-auto max-w-[90vw] -translate-x-1/2 -translate-y-full rounded-full border border-slate-200 bg-white px-2 py-1 shadow-xl"
-            style={
-              reactionPopoverPosition
-                ? { top: reactionPopoverPosition.top, left: reactionPopoverPosition.left }
-                : { top: "50%", left: "50%" }
-            }
-          >
-            <div className="flex items-center gap-1">
-              {REACTION_CHOICES.map((emoji) => {
-                const loading = reactionMutationLoadingKey === `${String(reactionModalMessage.id)}:${emoji}`;
-
-                return (
-                  <button
-                    key={emoji}
-                    type="button"
-                    className={`flex h-9 w-9 items-center justify-center rounded-full text-lg transition ${
-                      loading ? "bg-slate-100 opacity-60" : "hover:bg-slate-100"
-                    }`}
-                    disabled={Boolean(reactionMutationLoadingKey)}
-                    onClick={() => void handleReactionToggle(emoji)}
-                    aria-label={`React with ${emoji}`}
-                  >
-                    {emoji}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {forwardModalMessage && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <button
-            type="button"
-            className="absolute inset-0 bg-slate-900/50"
-            aria-label="Close forward modal"
-            onClick={forwardModalLoading ? undefined : closeForwardModal}
-          />
-          <div className="relative w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
-            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-              <h2 className="text-base font-semibold text-slate-900">Forward</h2>
-              <button
-                type="button"
-                className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition hover:bg-slate-200"
-                onClick={forwardModalLoading ? undefined : closeForwardModal}
-                disabled={forwardModalLoading}
-                aria-label="Close forward modal"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            <div className="px-5 py-4">
-              <div className="relative">
-                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
-                <input
-                  value={forwardSearch}
-                  onChange={(event) => setForwardSearch(event.target.value)}
-                  placeholder="Search for people and groups"
-                  className="h-10 w-full rounded-full border border-slate-200 bg-slate-100 pl-9 pr-3 text-sm text-slate-800 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-[color:var(--messenger-blue)]/30"
-                  disabled={forwardModalLoading}
-                />
-              </div>
-
-              <div className="mt-4 flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-500">
-                <span>Contacts</span>
-                <span>{filteredForwardTargets.length}</span>
-              </div>
-
-              <div className="mt-3 max-h-[360px] space-y-2 overflow-y-auto pr-1">
-                {forwardTargetsLoading ? (
-                  <p className="text-sm text-slate-500">Loading contacts...</p>
-                ) : filteredForwardTargets.length === 0 ? (
-                  <p className="text-sm text-slate-500">No contacts found.</p>
-                ) : (
-                  filteredForwardTargets.map((target) => {
-                    const label =
-                      target.title?.trim() ||
-                      target.counterpart?.name?.trim() ||
-                      target.counterpart?.email ||
-                      `Conversation #${target.conversation_id}`;
-                    const subtitle =
-                      target.counterpart?.email && target.counterpart.email !== label ? target.counterpart.email : null;
-                    const avatarUrl = resolveAvatarUrl(target.avatar_path);
-                    const initial = label.charAt(0).toUpperCase();
-                    const targetId = String(target.conversation_id);
-                    const isSending = forwardSendingId === targetId;
-
-                    return (
-                      <div
-                        key={targetId}
-                        className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2"
-                      >
-                        <div className="flex min-w-0 items-center gap-3">
-                          <UserAvatar
-                            name={label}
-                            src={avatarUrl}
-                            size={40}
-                            isOnline={Boolean(target.counterpart?.id && presenceByUserIdMap[target.counterpart.id]?.isOnline)}
-                            showStatus={target.type === "direct"}
-                          />
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-medium text-slate-900">{label}</p>
-                            {subtitle && <p className="truncate text-xs text-slate-500">{subtitle}</p>}
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
-                          disabled={forwardModalLoading || isSending}
-                          onClick={() => void handleQuickForward(targetId)}
-                        >
-                          {isSending ? "Sending..." : "Send"}
-                        </button>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
-
-            {forwardModalError && (
-              <div className="border-t border-slate-200 px-5 py-3 text-xs text-rose-600">{forwardModalError}</div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {membersModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <button
-            type="button"
-            className="absolute inset-0 bg-slate-900/50"
-            aria-label="Close members modal"
-            onClick={memberSaving ? undefined : closeMembersModal}
-          />
-          <div className="relative w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
-            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-              <h2 className="text-base font-semibold text-slate-900">Add members</h2>
-              <button
-                type="button"
-                className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition hover:bg-slate-200"
-                onClick={memberSaving ? undefined : closeMembersModal}
-                disabled={memberSaving}
-                aria-label="Close members modal"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            <div className="px-5 py-4">
-              <input
-                value={memberSearch}
-                onChange={(event) => setMemberSearch(event.target.value)}
-                placeholder="Search users"
-                className="h-10 w-full rounded-full border border-slate-200 bg-slate-100 px-4 text-sm text-slate-800 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-[color:var(--messenger-blue)]/30"
-                disabled={memberLoading || memberSaving}
-              />
-
-              <div className="mt-4 max-h-[320px] space-y-2 overflow-y-auto pr-1">
-                {memberLoading ? (
-                  <p className="text-sm text-slate-500">Loading users...</p>
-                ) : memberError ? (
-                  <p className="text-sm text-rose-600">{memberError}</p>
-                ) : filteredMemberDirectory.length === 0 ? (
-                  <p className="text-sm text-slate-500">No users available.</p>
-                ) : (
-                  filteredMemberDirectory.map((user) => {
-                    const isSelected = memberSelection.has(user.id);
-                    const isOnline = Boolean(presenceByUserIdMap[user.id]?.isOnline);
-
-                    return (
-                      <button
-                        key={`member-select-${user.id}`}
-                        type="button"
-                        className={`flex w-full items-center justify-between gap-3 rounded-xl border px-3 py-2 text-left transition ${
-                          isSelected ? "border-blue-200 bg-blue-50" : "border-slate-200 bg-white hover:bg-slate-50"
-                        }`}
-                        onClick={() => toggleMemberSelection(user.id)}
-                      >
-                        <div className="flex min-w-0 items-center gap-3">
-                          <UserAvatar name={user.name} size={36} isOnline={isOnline} />
-                          <span className="truncate text-sm font-medium text-slate-900">{user.name}</span>
-                        </div>
-                        <div
-                          className={`flex h-5 w-5 items-center justify-center rounded-full border ${
-                            isSelected ? "border-blue-500 bg-blue-500" : "border-slate-300"
-                          }`}
-                        >
-                          {isSelected && (
-                            <svg className="h-4 w-4 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
-                            </svg>
-                          )}
-                        </div>
-                      </button>
-                    );
-                  })
-                )}
-              </div>
-
-              {memberActionError && <p className="mt-3 text-xs text-rose-600">{memberActionError}</p>}
-            </div>
-
-            <div className="flex flex-col-reverse gap-2 border-t border-slate-200 px-5 py-4 sm:flex-row sm:justify-end">
-              <Button type="button" variant="outline" onClick={closeMembersModal} disabled={memberSaving}>
-                Cancel
-              </Button>
-              <Button
-                type="button"
-                onClick={() => void handleAddMembers()}
-                loading={memberSaving}
-                disabled={memberSaving || memberSelection.size === 0}
-              >
-                Add
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {imageViewer && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <button
-            type="button"
-            className="absolute inset-0 bg-slate-950/80"
-            aria-label="Close image viewer"
-            onClick={closeImageViewer}
-          />
-          <div className="relative z-10 w-full max-w-4xl">
-            <button
-              type="button"
-              className="absolute -top-10 right-0 flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-white transition hover:bg-white/20"
-              onClick={closeImageViewer}
-              aria-label="Close image viewer"
-            >
-              <X className="h-4 w-4" />
-            </button>
-            {imageViewer.mode === "gallery" && imageViewer.list && imageViewer.list.length > 1 && (
-              <>
-                <button
-                  type="button"
-                  className="absolute left-2 top-1/2 z-10 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/10 text-white transition hover:bg-white/20 disabled:opacity-40"
-                  onClick={goToPreviousImage}
-                  disabled={(imageViewer.index ?? 0) <= 0}
-                  aria-label="Previous photo"
-                >
-                  <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7" />
-                  </svg>
-                </button>
-                <button
-                  type="button"
-                  className="absolute right-2 top-1/2 z-10 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/10 text-white transition hover:bg-white/20 disabled:opacity-40"
-                  onClick={goToNextImage}
-                  disabled={(imageViewer.index ?? 0) >= (imageViewer.list.length - 1)}
-                  aria-label="Next photo"
-                >
-                  <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7" />
-                  </svg>
-                </button>
-              </>
-            )}
-            <div className="overflow-hidden rounded-2xl bg-slate-900 shadow-2xl">
-              <img
-                src={imageViewer.url}
-                alt={imageViewer.name}
-                className="max-h-[80vh] w-full object-contain"
-              />
-            </div>
-            <p className="mt-3 text-center text-xs text-slate-200">{imageViewer.name}</p>
-            {imageViewer.mode === "gallery" && imageViewer.list && imageViewer.list.length > 1 ? (
-              <p className="mt-1 text-center text-[11px] text-slate-400">
-                {(imageViewer.index ?? 0) + 1} / {imageViewer.list.length}
-              </p>
-            ) : null}
-          </div>
-        </div>
-      )}
-
-      {showActiveCallPanel && currentCall && (
-        <div className="fixed inset-x-0 bottom-4 z-40 flex justify-center px-4">
-          <div className="w-full max-w-4xl overflow-hidden rounded-[28px] border border-slate-200/80 bg-white/95 shadow-2xl backdrop-blur">
-            <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-5 py-4">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">
-                  {currentCall.call_type === "video" ? "Video call" : "Audio call"}
-                </p>
-                <h2 className="mt-1 text-lg font-semibold text-slate-900">{activeCallDisplayName}</h2>
-                <p className="mt-1 text-sm text-slate-500">{activeCallStatusLabel}</p>
-                <div className="mt-3 flex flex-wrap items-center gap-2">
-                  {showActiveCallDuration && (
-                    <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium text-slate-600">
-                      {activeCallDurationLabel}
-                    </span>
-                  )}
-                  <span className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium text-slate-600">
-                    <span className={`h-2 w-2 rounded-full ${activeCallNetworkToneClassName}`} />
-                    {activeCallNetworkLabel}
-                  </span>
-                </div>
-              </div>
-              <Button
-                type="button"
-                variant="danger"
-                className="rounded-full"
-                onClick={() => void handleEndActiveCall()}
-              >
-                End call
-              </Button>
-            </div>
-
-            {currentCall.call_type === "video" ? (
-              <div className="grid gap-3 bg-slate-950 p-4 md:grid-cols-[minmax(0,1fr)_240px]">
-                <div className="relative flex min-h-[260px] items-center justify-center overflow-hidden rounded-3xl border border-white/10 bg-slate-900">
-                  {callRemoteStream ? (
-                    <video
-                      ref={activeCallRemoteVideoRef}
-                      autoPlay
-                      playsInline
-                      className="h-full w-full object-cover"
-                    />
-                  ) : (
-                    <div className="text-center text-white">
-                      <p className="text-sm font-medium">Waiting for remote video...</p>
-                      <p className="mt-1 text-xs text-slate-300">Remote participant will appear here.</p>
-                    </div>
-                  )}
-                  <div className="absolute left-4 top-4 flex flex-wrap items-center gap-2">
-                    {showActiveCallDuration && (
-                      <span className="rounded-full bg-slate-950/70 px-3 py-1 text-xs font-medium text-white">
-                        {activeCallDurationLabel}
-                      </span>
-                    )}
-                    <span className="inline-flex items-center gap-2 rounded-full bg-slate-950/70 px-3 py-1 text-xs font-medium text-white">
-                      <span className={`h-2 w-2 rounded-full ${activeCallNetworkToneClassName}`} />
-                      {activeCallNetworkLabel}
-                    </span>
-                  </div>
-                </div>
-                <div className="flex min-h-[260px] flex-col gap-3">
-                  <div className="relative flex flex-1 items-center justify-center overflow-hidden rounded-3xl border border-white/10 bg-slate-900">
-                    {callLocalStream && !isCallCameraOff ? (
-                      <video
-                        ref={activeCallLocalVideoRef}
-                        autoPlay
-                        muted
-                        playsInline
-                        className="h-full w-full object-cover"
-                      />
-                    ) : (
-                      <div className="text-center text-white">
-                        <p className="text-sm font-medium">{isCallCameraOff ? "Camera is off" : "Camera preview"}</p>
-                        <p className="mt-1 text-xs text-slate-300">
-                          {callLocalStream ? "Turn camera on to preview video." : "Your local video will appear here."}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                  <div className="rounded-3xl bg-white p-3">
-                    <div className="grid grid-cols-3 gap-2">
-                      <Button
-                        type="button"
-                        variant={isCallMuted ? "outline" : "secondary"}
-                        className="rounded-full"
-                        onClick={handleToggleMuteCall}
-                      >
-                        {isCallMuted ? "Unmute" : "Mute"}
-                      </Button>
-                      <Button
-                        type="button"
-                        variant={isCallCameraOff ? "outline" : "secondary"}
-                        className="rounded-full"
-                        onClick={handleToggleCameraCall}
-                      >
-                        {isCallCameraOff ? "Camera on" : "Camera off"}
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="danger"
-                        className="rounded-full"
-                        onClick={() => void handleEndActiveCall()}
-                      >
-                        Hang up
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="bg-[radial-gradient(circle_at_top,#f8fafc_0%,#e2e8f0_100%)] px-5 py-10">
-                <div className="mx-auto flex max-w-xl flex-col items-center text-center">
-                  <div className="flex h-24 w-24 items-center justify-center rounded-full bg-white text-slate-700 shadow-lg">
-                    <svg className="h-10 w-10" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 18a6 6 0 006-6V8a6 6 0 10-12 0v4a6 6 0 006 6zm0 0v3m-4 0h8" />
-                    </svg>
-                  </div>
-                  <h3 className="mt-5 text-2xl font-semibold text-slate-900">{activeCallDisplayName}</h3>
-                  <p className="mt-2 text-sm text-slate-500">{activeCallStatusLabel}</p>
-                  <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-                    {showActiveCallDuration && (
-                      <span className="inline-flex items-center rounded-full border border-slate-200 bg-white/80 px-3 py-1 text-xs font-medium text-slate-600">
-                        {activeCallDurationLabel}
-                      </span>
-                    )}
-                    <span className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white/80 px-3 py-1 text-xs font-medium text-slate-600">
-                      <span className={`h-2 w-2 rounded-full ${activeCallNetworkToneClassName}`} />
-                      {activeCallNetworkLabel}
-                    </span>
-                  </div>
-                  <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
-                    <Button
-                      type="button"
-                      variant={isCallMuted ? "outline" : "secondary"}
-                      className="rounded-full"
-                      onClick={handleToggleMuteCall}
-                    >
-                      {isCallMuted ? "Unmute microphone" : "Mute microphone"}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="danger"
-                      className="rounded-full"
-                      onClick={() => void handleEndActiveCall()}
-                    >
-                      End call
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {removeModalMessage && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <button
-            type="button"
-            className="absolute inset-0 bg-slate-900/50"
-            aria-label="Close remove modal"
-            onClick={removeModalLoading ? undefined : closeRemoveModal}
-          />
-          <div className="relative w-full max-w-md rounded-2xl border border-white/60 bg-white p-5 shadow-2xl">
-            <h2 className="text-base font-semibold text-slate-900">Remove Message</h2>
-            <p className="mt-2 rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-600">
-              {removeModalMessage.body?.trim() || `[${removeModalMessage.message_type}]`}
-            </p>
-
-            <div className="mt-4 space-y-2">
-              <label className="flex cursor-pointer items-start gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-700">
-                <input
-                  type="radio"
-                  name="remove-mode"
-                  value="for_you"
-                  checked={removeModalMode === "for_you"}
-                  onChange={() => setRemoveModalMode("for_you")}
-                  disabled={removeModalLoading}
-                  className="mt-0.5"
-                />
-                <span>
-                  <strong>Remove for you</strong>
-                  <span className="block text-xs text-slate-500">Hide this message only from your view.</span>
-                </span>
-              </label>
-
-              {removeModalCanEverywhere && (
-                <label className="flex cursor-pointer items-start gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-700">
-                  <input
-                    type="radio"
-                    name="remove-mode"
-                    value="everywhere"
-                    checked={removeModalMode === "everywhere"}
-                    onChange={() => setRemoveModalMode("everywhere")}
-                    disabled={removeModalLoading}
-                    className="mt-0.5"
-                  />
-                  <span>
-                    <strong>Remove from everywhere</strong>
-                    <span className="block text-xs text-slate-500">Replace message with a tombstone for all participants.</span>
-                  </span>
-                </label>
-              )}
-            </div>
-
-            {removeModalError && <p className="mt-2 text-xs text-rose-600">{removeModalError}</p>}
-
-            <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-              <Button type="button" variant="outline" onClick={closeRemoveModal} disabled={removeModalLoading}>
-                Cancel
-              </Button>
-              <Button
-                type="button"
-                variant="danger"
-                onClick={() => void handleRemoveSubmit()}
-                loading={removeModalLoading}
-                disabled={removeModalLoading}
-              >
-                Remove
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ThreadRemoveMessageModal
+        message={removeModalMessage}
+        mode={removeModalMode}
+        canEverywhere={removeModalCanEverywhere}
+        loading={removeModalLoading}
+        error={removeModalError}
+        onClose={closeRemoveModal}
+        onModeChange={setRemoveModalMode}
+        onSubmit={() => void handleRemoveSubmit()}
+      />
     </ProtectedShell>
   );
 }

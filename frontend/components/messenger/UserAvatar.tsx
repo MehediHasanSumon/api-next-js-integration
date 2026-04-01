@@ -58,7 +58,7 @@ export default function UserAvatar({
       aria-label={name ?? "User avatar"}
     >
       <div
-        className={`flex h-full w-full items-center justify-center overflow-hidden rounded-full bg-gradient-to-br from-sky-500 to-blue-600 font-semibold text-white shadow-sm ${getTextSizeClass(
+        className={`flex h-full w-full items-center justify-center overflow-hidden rounded-full border border-white/70 bg-gradient-to-br from-sky-500 via-blue-500 to-indigo-600 font-semibold text-white shadow-[0_18px_36px_-22px_rgba(37,99,235,0.8)] ${getTextSizeClass(
           sizeValue
         )}`}
       >
@@ -67,7 +67,7 @@ export default function UserAvatar({
 
       {showStatus ? (
         <span
-          className={`absolute bottom-0 right-0 translate-x-1/4 translate-y-1/4 rounded-full border-2 border-white ${
+          className={`absolute bottom-0 right-0 translate-x-1/4 translate-y-1/4 rounded-full border-[3px] border-white shadow-sm ${
             isOnline ? "bg-emerald-500" : "bg-slate-300"
           }`}
           style={{ width: dotSize, height: dotSize }}
