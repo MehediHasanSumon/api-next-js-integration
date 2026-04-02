@@ -14,10 +14,15 @@ const initialState: ChatState = {
   error: null,
 };
 
-export const fetchInboxThreads = createAsyncThunk("chat/fetchInboxThreads", async () => {
+type FetchThreadsOptions = { silent?: boolean } | undefined;
+
+export const fetchInboxThreads = createAsyncThunk(
+  "chat/fetchInboxThreads",
+  async (_options: FetchThreadsOptions) => {
   const response = await listConversations({ filter: "inbox", per_page: 100 });
   return response.data.map(mapConversationToThread);
-});
+  }
+);
 
 const chatSlice = createSlice({
   name: "chat",
