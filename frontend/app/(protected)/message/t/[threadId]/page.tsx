@@ -3692,12 +3692,15 @@ export default function MessageThreadPage() {
             onFilterChange={setFilter}
             unreadCount={unreadCount}
             presenceByUserId={presenceByUserIdMap}
-            isLoading={threadsLoading}
-            errorMessage={threadsError}
-            onRetry={() => void refreshThreads()}
-            onOpenNewChat={openNewChatModal}
-            newChatModalState={newChatModalState}
-            activeThreadId={threadId}
+                isLoading={threadsLoading}
+                errorMessage={threadsError}
+                onRetry={() => void refreshThreads()}
+                onRefreshThreads={async () => {
+                  await refreshThreads();
+                }}
+                onOpenNewChat={openNewChatModal}
+                newChatModalState={newChatModalState}
+                activeThreadId={threadId}
           />
 
           <section className={`flex h-full min-h-0 flex-col bg-[radial-gradient(circle_at_top,#ffffff_0%,#f1f5f9_45%,#eaf2ff_100%)] ${showInfoPanel ? "border-r border-slate-200/80" : ""}`}>

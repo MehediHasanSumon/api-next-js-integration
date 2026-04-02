@@ -58,13 +58,6 @@ interface ChatThreadUpdatedEvent {
   sent_at?: string;
 }
 
-interface ChatConversationRequestUpdatedEvent {
-  conversation_id: number | string;
-  acted_by_user_id: number;
-  action: "accept" | "decline";
-  sent_at?: string;
-}
-
 interface ChatConversationUpdatedEvent {
   conversation_id: number | string;
   changes: {
@@ -87,11 +80,13 @@ interface ChatUserPresenceUpdatedEvent {
   sent_at?: string;
 }
 
-type DirectoryFilter = Extract<ThreadFilter, "requests" | "archived" | "blocked" | "all">;
+type DirectoryFilter = Extract<ThreadFilter, "unread" | "online" | "requests" | "archived" | "blocked" | "all">;
 
 const DIRECTORY_PAGE_SIZE = 50;
 
 const createEmptyDirectoryState = (): Record<DirectoryFilter, ConversationListItem[]> => ({
+  unread: [],
+  online: [],
   requests: [],
   archived: [],
   blocked: [],
@@ -209,7 +204,14 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
   }, [refreshThreads, threads.length]);
 
   useEffect(() => {
-    if (filter !== "requests" && filter !== "archived" && filter !== "blocked" && filter !== "all") {
+    if (
+      filter !== "unread" &&
+      filter !== "online" &&
+      filter !== "requests" &&
+      filter !== "archived" &&
+      filter !== "blocked" &&
+      filter !== "all"
+    ) {
       return;
     }
 
@@ -219,6 +221,8 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
   const unreadCount = useMemo(() => threads.reduce((sum, thread) => sum + thread.unread, 0), [threads]);
   const directoryThreadsByFilter = useMemo(
     () => ({
+      unread: directoryState.unread.map(mapConversationToThread),
+      online: directoryState.online.map(mapConversationToThread),
       requests: directoryState.requests.map(mapConversationToThread),
       archived: directoryState.archived.map(mapConversationToThread),
       blocked: directoryState.blocked.map(mapConversationToThread),
@@ -230,7 +234,12 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
   const filteredThreads = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     const selectedSourceThreads =
-      filter === "requests" || filter === "archived" || filter === "blocked" || filter === "all"
+      filter === "unread" ||
+      filter === "online" ||
+      filter === "requests" ||
+      filter === "archived" ||
+      filter === "blocked" ||
+      filter === "all"
         ? directoryThreadsByFilter[filter]
         : threads;
 
@@ -243,22 +252,6 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
 
       if (!matchQuery) {
         return false;
-      }
-
-      if (filter === "unread") {
-        return thread.unread > 0;
-      }
-
-      if (filter === "online") {
-        if (thread.participantState !== "accepted") {
-          return false;
-        }
-
-        if (thread.type !== "direct" || !thread.counterpartId) {
-          return false;
-        }
-
-        return Boolean(presenceByUserId[thread.counterpartId]?.isOnline);
       }
 
       if (filter === "requests") {
@@ -279,7 +272,7 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
 
       return true;
     });
-  }, [directoryThreadsByFilter, filter, presenceByUserId, searchQuery, threads]);
+  }, [directoryThreadsByFilter, filter, searchQuery, threads]);
 
   const acceptedDirectCounterpartIds = useMemo(() => {
     const ids = threads
@@ -589,7 +582,7 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
       }));
     };
 
-    const handleRequestUpdated = (_payload: ChatConversationRequestUpdatedEvent) => {
+    const handleRequestUpdated = () => {
       void refreshThreads({ silent: true });
     };
 
@@ -627,7 +620,8 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
         return;
       }
 
-      subscribedRef.current.forEach((id) => {
+      const subscribedConversationIds = Array.from(subscribedRef.current);
+      subscribedConversationIds.forEach((id) => {
         echo.leave(`conversation.${id}`);
       });
       subscribedRef.current.clear();

@@ -397,6 +397,7 @@ const normalizeConversationListItem = (value: unknown): ConversationListItem | n
     last_message_at: toNullableString(value.last_message_at) ?? lastMessage?.created_at ?? null,
     participant_state: (toNullableString(value.participant_state) as ParticipantState) ?? "accepted",
     archived_at: toNullableString(value.archived_at),
+    muted_until: toNullableString(value.muted_until),
     is_blocked: Boolean(value.is_blocked),
     unread_count: toNumber(value.unread_count),
     counterpart: normalizeChatUser(value.counterpart) ?? null,
@@ -753,6 +754,13 @@ export const unmuteConversation = async (
   return data;
 };
 
+export const deleteConversation = async (
+  conversationId: ConversationId
+): Promise<ConversationActionResponse> => {
+  const { data } = await api.delete<ConversationActionResponse>(conversationPath(conversationId));
+  return data;
+};
+
 export const startCall = async (
   conversationId: ConversationId,
   payload: StartCallPayload
@@ -971,6 +979,7 @@ const chatApi = {
   unarchiveConversation,
   muteConversation,
   unmuteConversation,
+  deleteConversation,
   leaveConversation,
   updateConversationParticipantRole,
 };

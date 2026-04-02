@@ -14,9 +14,7 @@ const initialState: ChatState = {
   error: null,
 };
 
-type FetchThreadsOptions = { silent?: boolean } | undefined;
-
-export const fetchInboxThreads = createAsyncThunk("chat/fetchInboxThreads", async (_options: FetchThreadsOptions) => {
+export const fetchInboxThreads = createAsyncThunk("chat/fetchInboxThreads", async () => {
   const response = await listConversations({ filter: "inbox", per_page: 100 });
   return response.data.map(mapConversationToThread);
 });

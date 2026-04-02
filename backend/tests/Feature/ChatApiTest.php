@@ -324,6 +324,72 @@ test('participant can mark conversation as read', function () {
     expect((int) $participant->unread_count)->toBe(0);
 });
 
+test('conversation list unread filter only returns conversations with unread messages', function () {
+    $viewer = User::factory()->create();
+    $unreadPeer = User::factory()->create();
+    $readPeer = User::factory()->create();
+
+    $unreadConversation = createDirectConversation($viewer, $unreadPeer);
+    $readConversation = createDirectConversation($viewer, $readPeer);
+
+    $unreadConversation->participants()
+        ->where('user_id', $viewer->id)
+        ->update(['unread_count' => 2]);
+
+    $readConversation->participants()
+        ->where('user_id', $viewer->id)
+        ->update(['unread_count' => 0]);
+
+    actingAs($viewer)
+        ->getJson('/api/chat/conversations?filter=unread')
+        ->assertOk()
+        ->assertJsonFragment(['conversation_id' => $unreadConversation->id])
+        ->assertJsonMissing(['conversation_id' => $readConversation->id]);
+});
+
+test('conversation list online filter only returns direct conversations with online accepted counterparts', function () {
+    $viewer = User::factory()->create();
+    $onlinePeer = User::factory()->create([
+        'last_seen_at' => now(),
+    ]);
+    $offlinePeer = User::factory()->create([
+        'last_seen_at' => now()->subMinutes(5),
+    ]);
+    $groupPeer = User::factory()->create([
+        'last_seen_at' => now(),
+    ]);
+
+    $onlineConversation = createDirectConversation($viewer, $onlinePeer);
+    $offlineConversation = createDirectConversation($viewer, $offlinePeer);
+
+    $groupConversation = Conversation::query()->create([
+        'type' => 'group',
+        'created_by' => $viewer->id,
+        'title' => 'Online group',
+    ]);
+
+    $groupConversation->participants()->create([
+        'user_id' => $viewer->id,
+        'role' => 'owner',
+        'participant_state' => 'accepted',
+        'accepted_at' => now(),
+    ]);
+
+    $groupConversation->participants()->create([
+        'user_id' => $groupPeer->id,
+        'role' => 'member',
+        'participant_state' => 'accepted',
+        'accepted_at' => now(),
+    ]);
+
+    actingAs($viewer)
+        ->getJson('/api/chat/conversations?filter=online')
+        ->assertOk()
+        ->assertJsonFragment(['conversation_id' => $onlineConversation->id])
+        ->assertJsonMissing(['conversation_id' => $offlineConversation->id])
+        ->assertJsonMissing(['conversation_id' => $groupConversation->id]);
+});
+
 test('participant can mute a conversation until a future timestamp', function () {
     $owner = User::factory()->create();
     $peer = User::factory()->create();
@@ -1301,6 +1367,27 @@ test('participant can unblock a direct conversation counterpart', function () {
             ->where('blocked_user_id', $peer->id)
             ->exists()
     )->toBeFalse();
+});
+
+test('participant can delete conversation for self and hide it from inbox', function () {
+    $owner = User::factory()->create();
+    $peer = User::factory()->create();
+    $conversation = createDirectConversation($owner, $peer);
+
+    actingAs($owner)
+        ->deleteJson("/api/chat/conversations/{$conversation->id}")
+        ->assertOk()
+        ->assertJsonPath('conversation_id', $conversation->id);
+
+    $participant = $conversation->participants()->where('user_id', $owner->id)->firstOrFail();
+    expect($participant->hidden_at)->not->toBeNull();
+    expect($participant->archived_at)->toBeNull();
+    expect($participant->muted_until)->toBeNull();
+
+    actingAs($owner)
+        ->getJson('/api/chat/conversations?filter=inbox')
+        ->assertOk()
+        ->assertJsonMissing(['conversation_id' => $conversation->id]);
 });
 
 test('group owner can re-add a previously removed participant', function () {

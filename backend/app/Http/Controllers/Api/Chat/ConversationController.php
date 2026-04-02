@@ -24,6 +24,8 @@ use Illuminate\Validation\ValidationException;
 
 class ConversationController extends Controller
 {
+    private const ONLINE_WINDOW_SECONDS = 90;
+
     public function store(StartConversationRequest $request): JsonResponse
     {
         $validated = $request->validated();
@@ -184,7 +186,7 @@ class ConversationController extends Controller
     public function index(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'filter' => 'nullable|in:inbox,requests,archived,blocked,all',
+            'filter' => 'nullable|in:inbox,unread,online,requests,archived,blocked,all',
             'per_page' => 'nullable|integer|min:5|max:100',
         ]);
 
@@ -215,6 +217,30 @@ class ConversationController extends Controller
             $query->whereIn('participant_state', ['accepted', 'pending'])
                 ->whereNull('archived_at')
                 ->whereNull('hidden_at');
+        } elseif ($filter === 'unread') {
+            $query->whereIn('participant_state', ['accepted', 'pending'])
+                ->whereNull('archived_at')
+                ->whereNull('hidden_at')
+                ->where('unread_count', '>', 0);
+        } elseif ($filter === 'online') {
+            $onlineThreshold = now()->subSeconds(self::ONLINE_WINDOW_SECONDS);
+
+            $query->where('participant_state', 'accepted')
+                ->whereNull('archived_at')
+                ->whereNull('hidden_at')
+                ->whereHas('conversation', function (Builder $conversationQuery) use ($user, $onlineThreshold): void {
+                    $conversationQuery
+                        ->where('type', 'direct')
+                        ->whereHas('participants', function (Builder $participantQuery) use ($user, $onlineThreshold): void {
+                            $participantQuery
+                                ->where('user_id', '!=', (int) $user->id)
+                                ->whereNull('hidden_at')
+                                ->where('participant_state', 'accepted')
+                                ->whereHas('user', function (Builder $userQuery) use ($onlineThreshold): void {
+                                    $userQuery->where('last_seen_at', '>=', $onlineThreshold);
+                                });
+                        });
+                });
         } elseif ($filter === 'requests') {
             $query->where('participant_state', 'pending')
                 ->whereNull('hidden_at');
@@ -271,6 +297,7 @@ class ConversationController extends Controller
                     'last_message_at' => $lastMessage?->created_at,
                     'participant_state' => $participant->participant_state,
                     'archived_at' => $participant->archived_at,
+                    'muted_until' => $participant->muted_until,
                     'is_blocked' => isset($blockedLookup[(int) $participant->conversation_id]),
                     'unread_count' => $participant->unread_count,
                     'counterpart' => $counterpart ? [
@@ -820,6 +847,26 @@ class ConversationController extends Controller
 
         return response()->json([
             'message' => 'User unblocked successfully.',
+            'conversation_id' => $conversation->id,
+        ]);
+    }
+
+    public function destroy(
+        Request $request,
+        Conversation $conversation,
+        ConversationAccessService $accessService
+    ): JsonResponse {
+        $participant = $accessService->requireVisibleParticipant($conversation, $request->user());
+
+        $participant->update([
+            'hidden_at' => now(),
+            'archived_at' => null,
+            'muted_until' => null,
+            'unread_count' => 0,
+        ]);
+
+        return response()->json([
+            'message' => 'Conversation deleted successfully.',
             'conversation_id' => $conversation->id,
         ]);
     }

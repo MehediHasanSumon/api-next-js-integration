@@ -1,14 +1,29 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
+import type { AxiosError } from "axios";
+import { MoreHorizontal } from "lucide-react";
 import Button from "@/components/Button";
+import DeleteConfirmModal from "@/components/DeleteConfirmModal";
 import MessengerSidebar from "@/components/messenger/MessengerSidebar";
 import NewChatModal from "@/components/messenger/NewChatModal";
 import UserAvatar from "@/components/messenger/UserAvatar";
-import { MessengerChevronRightIcon } from "@/components/icons/messenger-icons";
 import type { ThreadItem } from "@/lib/chat-threads";
 import type { NewChatModalState, ThreadFilter } from "@/lib/use-messenger-threads";
+import { ThreadMuteConversationModal } from "@/app/(protected)/message/t/[threadId]/thread-page-overlays";
+import {
+  archiveConversation,
+  blockConversation,
+  deleteConversation,
+  muteConversation,
+  unarchiveConversation,
+  unblockConversation,
+  unmuteConversation,
+} from "@/lib/chat-api";
+import { buildMuteUntilIso, isFutureIsoDate, MUTE_PRESETS } from "@/app/(protected)/message/t/[threadId]/thread-page-helpers";
 
 const resolveAvatarUrl = (avatarPath: string | null): string | null => {
   if (!avatarPath) {
@@ -38,6 +53,7 @@ interface MessengerThreadsSidebarProps {
   isLoading: boolean;
   errorMessage: string | null;
   onRetry: () => void;
+  onRefreshThreads: () => Promise<void>;
   onOpenNewChat: () => void;
   newChatModalState: NewChatModalState;
   activeThreadId?: string | null;
@@ -55,17 +71,36 @@ export default function MessengerThreadsSidebar({
   isLoading,
   errorMessage,
   onRetry,
+  onRefreshThreads,
   onOpenNewChat,
   newChatModalState,
   activeThreadId,
 }: MessengerThreadsSidebarProps) {
+  const router = useRouter();
+  const pathname = usePathname();
   const [moreFiltersOpen, setMoreFiltersOpen] = useState(false);
   const moreFiltersRef = useRef<HTMLDivElement | null>(null);
+  const [openThreadMenuId, setOpenThreadMenuId] = useState<string | null>(null);
+  const [threadActionLoadingId, setThreadActionLoadingId] = useState<string | null>(null);
+  const [threadActionError, setThreadActionError] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ThreadItem | null>(null);
+  const [muteTarget, setMuteTarget] = useState<ThreadItem | null>(null);
+  const [selectedMutePresetId, setSelectedMutePresetId] = useState<(typeof MUTE_PRESETS)[number]["id"]>("15m");
+  const [portalMounted, setPortalMounted] = useState(false);
+  const threadMenuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    setPortalMounted(true);
+  }, []);
 
   useEffect(() => {
     const handlePointerDown = (event: MouseEvent) => {
       if (!moreFiltersRef.current?.contains(event.target as Node)) {
         setMoreFiltersOpen(false);
+      }
+
+      if (!threadMenuRef.current?.contains(event.target as Node)) {
+        setOpenThreadMenuId(null);
       }
     };
 
@@ -74,6 +109,65 @@ export default function MessengerThreadsSidebar({
       document.removeEventListener("mousedown", handlePointerDown);
     };
   }, []);
+
+  const closeThreadMenu = () => {
+    setOpenThreadMenuId(null);
+  };
+
+  const handleThreadAction = async (
+    thread: ThreadItem,
+    action: "archive" | "mute" | "block" | "delete"
+  ) => {
+    setThreadActionError(null);
+    setThreadActionLoadingId(thread.id);
+
+    try {
+      if (action === "archive") {
+        if (thread.archivedAt) {
+          await unarchiveConversation(thread.id);
+        } else {
+          await archiveConversation(thread.id);
+        }
+      } else if (action === "mute") {
+        if (isFutureIsoDate(thread.mutedUntil)) {
+          await unmuteConversation(thread.id);
+        } else {
+          const preset = MUTE_PRESETS.find((item) => item.id === selectedMutePresetId) ?? MUTE_PRESETS[0];
+          await muteConversation(thread.id, { muted_until: buildMuteUntilIso(preset.durationMs) });
+        }
+      } else if (action === "block") {
+        if (thread.isBlocked) {
+          await unblockConversation(thread.id);
+        } else {
+          await blockConversation(thread.id);
+        }
+      } else {
+        await deleteConversation(thread.id);
+      }
+
+      await onRefreshThreads();
+
+      const shouldExitActiveThread =
+        String(activeThreadId ?? "") === String(thread.id) &&
+        (action === "delete" || action === "archive" || action === "block");
+
+      if (shouldExitActiveThread && pathname?.startsWith("/message/")) {
+        router.push("/masseges");
+      }
+    } catch (error) {
+      const axiosError = error as AxiosError<{ message?: string }>;
+      setThreadActionError(axiosError.response?.data?.message || "Failed to update conversation.");
+    } finally {
+      setThreadActionLoadingId(null);
+      closeThreadMenu();
+      if (action === "delete") {
+        setDeleteTarget(null);
+      }
+      if (action === "mute") {
+        setMuteTarget(null);
+      }
+    }
+  };
 
   const selectMoreFilter = (nextFilter: Extract<ThreadFilter, "requests" | "archived" | "blocked" | "all">) => {
     onFilterChange(nextFilter);
@@ -220,41 +314,135 @@ export default function MessengerThreadsSidebar({
               const isOnline = counterpartId ? Boolean(presenceByUserId[counterpartId]?.isOnline) : false;
               const showStatus = thread.type === "direct";
               const avatarUrl = resolveAvatarUrl(thread.avatarPath);
+              const isMenuOpen = openThreadMenuId === thread.id;
+              const isThreadActionLoading = threadActionLoadingId === thread.id;
+              const isMuted = isFutureIsoDate(thread.mutedUntil);
 
               return (
-                <Link
+                <div
                   key={thread.id}
-                  href={`/message/t/${thread.id}`}
-                  className={`group flex items-start gap-3 rounded-[22px] border px-3.5 py-3 transition ${
+                  ref={isMenuOpen ? threadMenuRef : null}
+                  className={`group relative flex items-start gap-2 rounded-[22px] border px-3 py-3 transition ${
                     isActive
                       ? "border-blue-200/80 bg-[linear-gradient(180deg,#f4f8ff,#eef4ff)] shadow-[0_22px_48px_-36px_rgba(37,99,235,0.55)]"
                       : "border-transparent hover:border-slate-200/80 hover:bg-white/78"
                   }`}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    setThreadActionError(null);
+                    setOpenThreadMenuId(thread.id);
+                  }}
                 >
-                  <div className="mt-0.5 shrink-0">
-                    <UserAvatar name={thread.name} src={avatarUrl} size={40} isOnline={isOnline} showStatus={showStatus} />
-                  </div>
-
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="truncate text-sm font-semibold tracking-tight text-slate-900">{thread.name}</p>
-                      <span className="shrink-0 text-[11px] font-medium text-slate-500">{thread.lastTime}</span>
+                  <Link href={`/message/t/${thread.id}`} className="flex min-w-0 flex-1 items-start gap-3">
+                    <div className="mt-0.5 shrink-0">
+                      <UserAvatar name={thread.name} src={avatarUrl} size={40} isOnline={isOnline} showStatus={showStatus} />
                     </div>
-                    <div className="mt-0.5 flex items-center justify-between gap-2">
-                      <p className="truncate text-xs leading-5 text-slate-500">{thread.lastMessage}</p>
-                      <div className="flex shrink-0 items-center gap-1">
+
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <p className="truncate text-sm font-semibold tracking-tight text-slate-900">{thread.name}</p>
+                      </div>
+                      <div className="mt-0.5 flex items-center gap-2">
+                        <p className="min-w-0 flex-1 truncate text-xs leading-5 text-slate-500">
+                          <span className="truncate">{thread.lastMessage}</span>
+                          <span className="ml-2 shrink-0 text-[11px] font-medium text-slate-500">{thread.lastTime}</span>
+                        </p>
                         {thread.unread > 0 && (
                           <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-[color:var(--messenger-blue)] px-1.5 text-[11px] font-semibold text-white shadow-[0_10px_24px_-16px_rgba(37,99,235,0.95)]">
                             {thread.unread}
                           </span>
                         )}
-                        <MessengerChevronRightIcon className={`h-3.5 w-3.5 transition ${isActive ? "text-blue-500" : "text-slate-300 group-hover:text-slate-500"}`} />
                       </div>
                     </div>
+                  </Link>
+
+                  <div className="relative shrink-0">
+                    <button
+                      type="button"
+                      className={`mt-1 inline-flex h-8 w-8 items-center justify-center rounded-full border border-transparent text-slate-400 transition hover:border-slate-200 hover:bg-white hover:text-slate-700 ${
+                        isMenuOpen ? "border-slate-200 bg-white text-slate-700" : "opacity-0 group-hover:opacity-100"
+                      }`}
+                      aria-label={`Open actions for ${thread.name}`}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setThreadActionError(null);
+                        setOpenThreadMenuId((previous) => (previous === thread.id ? null : thread.id));
+                      }}
+                    >
+                      <MoreHorizontal className="h-4 w-4" />
+                    </button>
+
+                    {isMenuOpen && (
+                      <div className="absolute right-0 top-10 z-20 min-w-[180px] rounded-2xl border border-slate-200 bg-white p-1.5 shadow-[0_26px_56px_-28px_rgba(15,23,42,0.42)]">
+                        <button
+                          type="button"
+                          className="flex w-full rounded-xl px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-50"
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            void handleThreadAction(thread, "archive");
+                          }}
+                          disabled={isThreadActionLoading}
+                        >
+                          {thread.archivedAt ? "Unarchive" : "Archive"}
+                        </button>
+                        <button
+                          type="button"
+                          className="flex w-full rounded-xl px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-50"
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            if (isMuted) {
+                              void handleThreadAction(thread, "mute");
+                              return;
+                            }
+
+                            setSelectedMutePresetId("15m");
+                            setMuteTarget(thread);
+                            closeThreadMenu();
+                          }}
+                          disabled={isThreadActionLoading}
+                        >
+                          {isMuted ? "Unmute notifications" : "Mute notifications"}
+                        </button>
+                        {thread.type === "direct" && (
+                          <button
+                            type="button"
+                            className="flex w-full rounded-xl px-3 py-2 text-left text-xs font-medium text-rose-600 hover:bg-rose-50"
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              void handleThreadAction(thread, "block");
+                            }}
+                            disabled={isThreadActionLoading}
+                          >
+                            {thread.isBlocked ? "Unblock user" : "Block user"}
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="flex w-full rounded-xl px-3 py-2 text-left text-xs font-medium text-rose-600 hover:bg-rose-50"
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setDeleteTarget(thread);
+                          }}
+                          disabled={isThreadActionLoading}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    )}
                   </div>
-                </Link>
+                </div>
               );
             })}
+            {threadActionError && (
+              <div className="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700">
+                {threadActionError}
+              </div>
+            )}
           </div>
         )}
       </MessengerSidebar>
@@ -276,6 +464,50 @@ export default function MessengerThreadsSidebar({
         onToggleUser={newChatModalState.onToggleUser}
         onSubmit={newChatModalState.onSubmit}
       />
+
+      {portalMounted
+        ? createPortal(
+            <>
+              <DeleteConfirmModal
+                isOpen={Boolean(deleteTarget)}
+                title="Delete conversation"
+                description="This will remove the conversation from your list. You can start or reopen it again later if needed."
+                itemName={deleteTarget?.name}
+                confirmLabel="Delete conversation"
+                loading={Boolean(deleteTarget && threadActionLoadingId === deleteTarget.id)}
+                onCancel={() => setDeleteTarget(null)}
+                onConfirm={() => {
+                  if (!deleteTarget) {
+                    return;
+                  }
+
+                  void handleThreadAction(deleteTarget, "delete");
+                }}
+              />
+
+              <ThreadMuteConversationModal
+                open={Boolean(muteTarget)}
+                presets={MUTE_PRESETS}
+                selectedPresetId={selectedMutePresetId}
+                loading={Boolean(muteTarget && threadActionLoadingId === muteTarget.id)}
+                error={threadActionError}
+                onClose={() => {
+                  setMuteTarget(null);
+                  setThreadActionError(null);
+                }}
+                onPresetChange={(presetId) => setSelectedMutePresetId(presetId as (typeof MUTE_PRESETS)[number]["id"])}
+                onConfirm={() => {
+                  if (!muteTarget) {
+                    return;
+                  }
+
+                  void handleThreadAction(muteTarget, "mute");
+                }}
+              />
+            </>,
+            document.body
+          )
+        : null}
     </>
   );
 }

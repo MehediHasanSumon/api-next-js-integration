@@ -485,6 +485,7 @@ export const mapConversationDetailToThread = (
     unread: participant?.unread_count ?? 0,
     participantState: participant?.participant_state ?? "accepted",
     archivedAt: participant?.archived_at ?? null,
+    mutedUntil: participant?.muted_until ?? null,
     isBlocked: false,
     type: conversation.type ?? null,
     counterpartId: null,

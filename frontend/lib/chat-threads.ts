@@ -23,6 +23,7 @@ export interface ThreadItem {
   unread: number;
   participantState: ParticipantState;
   archivedAt: string | null;
+  mutedUntil: string | null;
   isBlocked: boolean;
   type: string | null;
   counterpartId: number | null;
@@ -76,6 +77,7 @@ export const mapConversationToThread = (conversation: ConversationListItem): Thr
     unread: conversation.unread_count,
     participantState: conversation.participant_state,
     archivedAt: conversation.archived_at,
+    mutedUntil: conversation.muted_until,
     isBlocked: conversation.is_blocked === true,
     type: conversation.type,
     counterpartId: conversation.counterpart?.id ?? null,

@@ -9,7 +9,7 @@ export type MessageReactionAction = "added" | "removed";
 export type CallType = "audio" | "video";
 export type CallStatus = "idle" | "calling" | "incoming" | "connecting" | "active" | "ended" | "failed";
 
-export type ConversationFilter = "inbox" | "requests" | "archived" | "blocked" | "all";
+export type ConversationFilter = "inbox" | "unread" | "online" | "requests" | "archived" | "blocked" | "all";
 export type RequestAction = "accept" | "decline";
 
 export interface PaginatedLink {
@@ -191,6 +191,7 @@ export interface ConversationListItem {
   last_message_at: string | null;
   participant_state: ParticipantState;
   archived_at: string | null;
+  muted_until: string | null;
   is_blocked?: boolean;
   unread_count: number;
   counterpart: ChatUser | null;
@@ -262,7 +263,7 @@ export interface CallEventPayload {
   sent_at?: string;
 }
 
-export interface CallMissedEventPayload extends CallEventPayload {}
+export type CallMissedEventPayload = CallEventPayload;
 
 export interface WebRtcSessionDescriptionPayload {
   type: "offer" | "answer";

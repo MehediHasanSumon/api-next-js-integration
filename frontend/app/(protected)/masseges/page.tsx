@@ -44,6 +44,9 @@ export default function MassegesPage() {
           isLoading={isLoading}
           errorMessage={errorMessage}
           onRetry={() => void refreshThreads()}
+          onRefreshThreads={async () => {
+            await refreshThreads();
+          }}
           onOpenNewChat={openNewChatModal}
           newChatModalState={newChatModalState}
         />

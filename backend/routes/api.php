@@ -63,6 +63,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('/conversations/{conversation}/mute', [ConversationController::class, 'unmute']);
         Route::post('/conversations/{conversation}/block', [ConversationController::class, 'block']);
         Route::delete('/conversations/{conversation}/block', [ConversationController::class, 'unblock']);
+        Route::delete('/conversations/{conversation}', [ConversationController::class, 'destroy']);
 
         Route::get('/conversations/{conversation}/messages', [MessageController::class, 'index']);
         Route::post('/conversations/{conversation}/messages', [MessageController::class, 'store']);
