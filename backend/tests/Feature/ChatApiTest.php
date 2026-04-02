@@ -1390,6 +1390,50 @@ test('participant can delete conversation for self and hide it from inbox', func
         ->assertJsonMissing(['conversation_id' => $conversation->id]);
 });
 
+test('deleted conversation stays hidden for actor old messages after reopening direct chat', function () {
+    $userA = User::factory()->create();
+    $userB = User::factory()->create();
+    $conversation = createDirectConversation($userA, $userB);
+
+    $firstMessage = $conversation->messages()->create([
+        'sender_id' => $userA->id,
+        'message_type' => 'text',
+        'body' => 'Old hello',
+    ]);
+
+    $secondMessage = $conversation->messages()->create([
+        'sender_id' => $userB->id,
+        'message_type' => 'text',
+        'body' => 'Old reply',
+    ]);
+
+    $conversation->update([
+        'last_message_id' => $secondMessage->id,
+        'last_message_at' => $secondMessage->created_at,
+    ]);
+
+    actingAs($userB)
+        ->deleteJson("/api/chat/conversations/{$conversation->id}")
+        ->assertOk();
+
+    actingAs($userB)
+        ->postJson('/api/chat/conversations', [
+            'recipient_user_id' => $userA->id,
+        ])
+        ->assertOk()
+        ->assertJsonPath('conversation_id', $conversation->id);
+
+    actingAs($userB)
+        ->getJson("/api/chat/conversations/{$conversation->id}/messages")
+        ->assertOk()
+        ->assertJsonCount(0, 'data');
+
+    actingAs($userA)
+        ->getJson("/api/chat/conversations/{$conversation->id}/messages")
+        ->assertOk()
+        ->assertJsonCount(2, 'data');
+});
+
 test('group owner can re-add a previously removed participant', function () {
     $owner = User::factory()->create();
     $member = User::factory()->create();

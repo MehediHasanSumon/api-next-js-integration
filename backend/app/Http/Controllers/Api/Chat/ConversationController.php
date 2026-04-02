@@ -10,6 +10,7 @@ use App\Http\Requests\Chat\StartConversationRequest;
 use App\Models\Conversation;
 use App\Models\ConversationParticipant;
 use App\Models\Message;
+use App\Models\MessageReceipt;
 use App\Models\UserBlock;
 use App\Models\User;
 use App\Services\Chat\ConversationAccessService;
@@ -857,13 +858,57 @@ class ConversationController extends Controller
         ConversationAccessService $accessService
     ): JsonResponse {
         $participant = $accessService->requireVisibleParticipant($conversation, $request->user());
+        $actorUserId = (int) $request->user()->id;
+        $hiddenAt = now();
 
-        $participant->update([
-            'hidden_at' => now(),
-            'archived_at' => null,
-            'muted_until' => null,
-            'unread_count' => 0,
-        ]);
+        DB::transaction(function () use ($participant, $conversation, $actorUserId, $hiddenAt): void {
+            $participant->update([
+                'hidden_at' => $hiddenAt,
+                'archived_at' => null,
+                'muted_until' => null,
+                'unread_count' => 0,
+            ]);
+
+            MessageReceipt::query()
+                ->where('user_id', $actorUserId)
+                ->whereIn('message_id', function ($query) use ($conversation): void {
+                    $query->select('id')
+                        ->from('messages')
+                        ->where('conversation_id', (int) $conversation->id)
+                        ->whereNull('deleted_at');
+                })
+                ->whereNull('hidden_at')
+                ->update([
+                    'hidden_at' => $hiddenAt,
+                    'updated_at' => $hiddenAt,
+                ]);
+
+            Message::query()
+                ->where('conversation_id', (int) $conversation->id)
+                ->whereNull('deleted_at')
+                ->whereDoesntHave('receipts', function (Builder $receiptQuery) use ($actorUserId): void {
+                    $receiptQuery->where('user_id', $actorUserId);
+                })
+                ->select('id')
+                ->chunkById(500, function ($messages) use ($actorUserId, $hiddenAt): void {
+                    $receiptRows = collect($messages)
+                        ->map(fn (Message $message): array => [
+                            'message_id' => (int) $message->id,
+                            'user_id' => $actorUserId,
+                            'status' => 'delivered',
+                            'delivered_at' => $hiddenAt,
+                            'seen_at' => null,
+                            'hidden_at' => $hiddenAt,
+                            'created_at' => $hiddenAt,
+                            'updated_at' => $hiddenAt,
+                        ])
+                        ->all();
+
+                    if ($receiptRows !== []) {
+                        MessageReceipt::query()->insert($receiptRows);
+                    }
+                });
+        });
 
         return response()->json([
             'message' => 'Conversation deleted successfully.',
