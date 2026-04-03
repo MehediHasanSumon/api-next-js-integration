@@ -36,7 +36,21 @@ class CallController extends Controller
         $participant = $accessService->requireAcceptedParticipant($conversation, $actor);
         $this->ensureDirectConversation($conversation);
         $moderationService->ensureConversationNotBlocked($conversation, $actor);
-        $this->ensureNoActiveCall($conversation);
+
+        $existingActiveCall = $this->findActiveCall($conversation);
+        if ($existingActiveCall) {
+            if ((int) $existingActiveCall->caller_id === (int) $actor->id) {
+                $this->closeSupersededActiveCall(
+                    $existingActiveCall,
+                    $conversation,
+                    $actor,
+                    $participant,
+                    $messagingService
+                );
+            } else {
+                $this->ensureNoActiveCall($conversation);
+            }
+        }
 
         $validated = $request->validate([
             'call_type' => 'required|string|in:audio,video',
@@ -393,15 +407,21 @@ class CallController extends Controller
 
     private function ensureNoActiveCall(Conversation $conversation): void
     {
-        $activeCallExists = $conversation->calls()
-            ->whereIn('status', ['initiated', 'ringing', 'accepted'])
-            ->exists();
+        $activeCallExists = $this->findActiveCall($conversation) !== null;
 
         if ($activeCallExists) {
             throw ValidationException::withMessages([
                 'conversation' => ['There is already an active call in this conversation.'],
             ]);
         }
+    }
+
+    private function findActiveCall(Conversation $conversation): ?Call
+    {
+        return $conversation->calls()
+            ->whereIn('status', ['initiated', 'ringing', 'accepted'])
+            ->latest('id')
+            ->first();
     }
 
     private function resolveCallableCounterpartUser(Conversation $conversation, int $actorUserId): ?User
@@ -449,6 +469,41 @@ class CallController extends Controller
             throw ValidationException::withMessages([
                 'call' => [$message],
             ]);
+        }
+    }
+
+    private function closeSupersededActiveCall(
+        Call $call,
+        Conversation $conversation,
+        User $actor,
+        ConversationParticipant $participant,
+        ChatMessagingService $messagingService
+    ): void {
+        $endedAt = now();
+        $answeredAt = $call->answered_at;
+        $durationSeconds = $answeredAt ? max(0, $answeredAt->diffInSeconds($endedAt)) : null;
+
+        $call->update([
+            'status' => 'ended',
+            'ended_at' => $endedAt,
+            'end_reason' => 'restarted',
+            'duration_seconds' => $durationSeconds,
+        ]);
+
+        $callPayload = $this->serializeCall($call->fresh(['conversation', 'caller', 'receiver']));
+        $this->recordCallHistoryMessage($messagingService, $conversation, $actor, $participant, $call, 'ended');
+
+        $recipientIds = array_values(array_filter([
+            (int) $call->caller_id,
+            $call->receiver_id !== null ? (int) $call->receiver_id : null,
+        ], static fn ($id) => $id !== (int) $actor->id && $id !== 0));
+
+        if ($recipientIds !== []) {
+            broadcast(new CallEnded(
+                (int) $conversation->id,
+                $callPayload,
+                $recipientIds
+            ))->toOthers();
         }
     }
 

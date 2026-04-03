@@ -1,7 +1,7 @@
 "use client";
 
 import { ChangeEvent, FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import type { AxiosError } from "axios";
 import { CornerUpLeft, Forward, PencilLine, SmilePlus, Trash2 } from "lucide-react";
 import ProtectedShell from "@/components/ProtectedShell";
@@ -16,7 +16,7 @@ import MessengerLayout from "@/components/messenger/MessengerLayout";
 import MessengerThreadsSidebar from "@/components/messenger/MessengerThreadsSidebar";
 import MessengerHeader from "@/components/messenger/MessengerHeader";
 import MessageBubble from "@/components/messenger/MessageBubble";
-import { canShowCallLauncher } from "@/lib/call-ui";
+import { canAcceptIncomingCall, canShowCallLauncher } from "@/lib/call-ui";
 import {
   classifyCallNetworkQuality,
   formatCallDuration,
@@ -60,6 +60,13 @@ import {
   unarchiveConversation,
 } from "@/lib/chat-api";
 import callSignaling from "@/lib/call-signaling";
+import {
+  closeCallWindow,
+  isManagedInPopupWindow,
+  navigateCallWindow,
+  openCallWindowPlaceholder,
+  setManagedPopupCallId,
+} from "@/lib/call-window";
 import {
   requestAudioStream,
   requestVideoStream,
@@ -145,8 +152,8 @@ import {
   toNumericId,
   upsertMessageByIdentity,
 } from "./thread-page-helpers";
+import ThreadPageCallWindow from "./thread-page-call-window";
 import {
-  ThreadActiveCallPanel,
   ThreadForwardModal,
   ThreadImageViewer,
   ThreadMembersModal,
@@ -159,13 +166,26 @@ import {
 export default function MessageThreadPage() {
   const params = useParams<{ threadId: string }>();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const dispatch = useAppDispatch();
   const threadId = params?.threadId || "";
+  const isCallWindow = searchParams.get("callWindow") === "1";
+  const callWindowMode = searchParams.get("callMode");
+  const callWindowCallId = useMemo(() => {
+    const rawCallId = searchParams.get("callId");
+    if (!rawCallId) {
+      return null;
+    }
+
+    const parsedCallId = Number(rawCallId);
+    return Number.isFinite(parsedCallId) ? parsedCallId : null;
+  }, [searchParams]);
 
   const currentUser = useAppSelector((state) => state.auth.user);
   const currentUserId = currentUser?.id ?? null;
   const currentCall = useAppSelector((state) => state.call.currentCall);
   const callStatus = useAppSelector((state) => state.call.callStatus);
+  const callError = useAppSelector((state) => state.call.error);
   const callLocalStream = useAppSelector((state) => state.call.localStream);
   const callRemoteStream = useAppSelector((state) => state.call.remoteStream);
   const isCallMuted = useAppSelector((state) => state.call.isMuted);
@@ -250,6 +270,8 @@ export default function MessageThreadPage() {
   const [callMenuOpen, setCallMenuOpen] = useState(false);
   const [callActionLoading, setCallActionLoading] = useState<CallType | null>(null);
   const [callActionError, setCallActionError] = useState<string | null>(null);
+  const [incomingCallActionLoading, setIncomingCallActionLoading] = useState<"accept" | "decline" | null>(null);
+  const [callWindowActionError, setCallWindowActionError] = useState<string | null>(null);
   const [callDurationSeconds, setCallDurationSeconds] = useState(0);
   const [callNetworkQuality, setCallNetworkQuality] = useState<CallNetworkQuality>("unavailable");
   const [callReconnectState, setCallReconnectState] = useState<"idle" | "reconnecting">("idle");
@@ -292,6 +314,8 @@ export default function MessageThreadPage() {
   const activeCallLocalVideoRef = useRef<HTMLVideoElement | null>(null);
   const activeCallRemoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const webRtcControllerRef = useRef<WebRtcConnectionController | null>(null);
+  const callLocalStreamRef = useRef<MediaStream | null>(null);
+  const callRemoteStreamRef = useRef<MediaStream | null>(null);
   const pendingIceCandidatesRef = useRef<WebRtcIceCandidatePayload[]>([]);
   const missedCallTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeCallIdRef = useRef<number | null>(null);
@@ -299,6 +323,11 @@ export default function MessageThreadPage() {
   const callReconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const callDurationIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const callQualityIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const localMediaWarmupInFlightRef = useRef(false);
+  const suppressPopupUnloadCallEndRef = useRef(false);
+  const popupUnloadCallEndSentRef = useRef(false);
+  const offerNegotiationCallIdRef = useRef<number | null>(null);
+  const offeredCallIdRef = useRef<number | null>(null);
   const toneControllerRef = useRef<CallToneController | null>(null);
   const previousDraftRef = useRef<string>("");
   const messageBubbleRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -756,6 +785,13 @@ export default function MessageThreadPage() {
     isBlockedConversation,
     callStatus,
   });
+  const canAcceptPopupIncomingCall = canAcceptIncomingCall({
+    participantState: participant?.participant_state,
+    participantArchivedAt: participant?.archived_at,
+    isBlockedConversation,
+    callStatus,
+  });
+  const callWindowAvatarUrl = detailsAvatarUrl ?? resolveAvatarUrl(activeThread?.avatarPath ?? null);
 
 
   const filteredForwardTargets = useMemo(() => {
@@ -1177,6 +1213,75 @@ export default function MessageThreadPage() {
     }
   }, []);
 
+  const shouldDeferCallHandlingToPopup = useCallback(
+    (callId: number): boolean => !isCallWindow && isManagedInPopupWindow(callId),
+    [isCallWindow]
+  );
+
+  useEffect(() => {
+    if (!threadId || !callWindowCallId) {
+      return;
+    }
+
+    let cancelled = false;
+
+    if (isCallWindow) {
+      setManagedPopupCallId(callWindowCallId);
+    }
+
+    void (async () => {
+      try {
+        const response = await callSignaling.showCall(callWindowCallId);
+        if (cancelled) {
+          return;
+        }
+
+        const call = response.data;
+        dispatch(setCurrentCall(call));
+
+        if (callWindowMode === "incoming" && call.status === "ringing") {
+          dispatch(
+            setIncomingCallPayload({
+              conversationId: Number(call.conversation_id),
+              call,
+            })
+          );
+          dispatch(setCallStatus("incoming"));
+          return;
+        }
+
+        dispatch(setIncomingCallPayload(null));
+
+        if (call.status === "accepted") {
+          dispatch(setCallStatus("connecting"));
+          return;
+        }
+
+        if (call.status === "ringing") {
+          dispatch(setCallStatus("calling"));
+          return;
+        }
+
+        if (call.status === "failed") {
+          dispatch(setCallStatus("failed"));
+          return;
+        }
+
+        dispatch(setCallStatus("ended"));
+      } catch {
+        if (cancelled) {
+          return;
+        }
+
+        dispatch(setCallError("Unable to restore the call window."));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [callWindowCallId, callWindowMode, dispatch, isCallWindow, threadId]);
+
   useEffect(() => {
     if (!threadId) {
       return;
@@ -1200,6 +1305,10 @@ export default function MessageThreadPage() {
         return;
       }
 
+      if (shouldDeferCallHandlingToPopup(payload.call.id)) {
+        return;
+      }
+
       const dedupeKey = `call.accepted:${threadId}:${payload.call.id}:${payload.sent_at ?? ""}`;
       if (!rememberRealtimeEvent(dedupeKey)) {
         return;
@@ -1210,13 +1319,29 @@ export default function MessageThreadPage() {
       dispatch(setCallStatus("connecting"));
 
       if (currentUserId !== null && Number(payload.call.caller_id) === Number(currentUserId)) {
+        if (
+          offerNegotiationCallIdRef.current === payload.call.id ||
+          offeredCallIdRef.current === payload.call.id
+        ) {
+          return;
+        }
+
+        offerNegotiationCallIdRef.current = payload.call.id;
         void (async () => {
           try {
-            const controller = await ensureCallControllerWithLocalStream(payload.call.id, payload.call.call_type);
-            const offer = await controller.createOffer();
+            const offer = await createOfferWithRecovery(payload.call.id, payload.call.call_type);
             await callSignaling.sendOffer(payload.call.id, offer);
-          } catch {
-            dispatch(setCallError("Failed to start WebRTC negotiation."));
+            offeredCallIdRef.current = payload.call.id;
+          } catch (error) {
+            await callSignaling.endCall(payload.call.id).catch(() => undefined);
+            dispatch(setCallStatus("failed"));
+            const message = error instanceof Error && error.message.trim() ? error.message : "Failed to start WebRTC negotiation.";
+            dispatch(setCallError(message));
+            offeredCallIdRef.current = null;
+          } finally {
+            if (offerNegotiationCallIdRef.current === payload.call.id) {
+              offerNegotiationCallIdRef.current = null;
+            }
           }
         })();
       }
@@ -1224,6 +1349,10 @@ export default function MessageThreadPage() {
 
     const handleDeclinedCallEvent = (payload: CallEventPayload) => {
       if (String(payload.conversation_id) !== threadId) {
+        return;
+      }
+
+      if (shouldDeferCallHandlingToPopup(payload.call.id)) {
         return;
       }
 
@@ -1235,11 +1364,16 @@ export default function MessageThreadPage() {
       dispatch(setCurrentCall(payload.call));
       dispatch(setIncomingCallPayload(null));
       dispatch(setCallStatus("ended"));
+      setManagedPopupCallId(null);
       cleanupWebRtcRuntime();
     };
 
     const handleEndedCallEvent = (payload: CallEventPayload) => {
       if (String(payload.conversation_id) !== threadId) {
+        return;
+      }
+
+      if (shouldDeferCallHandlingToPopup(payload.call.id)) {
         return;
       }
 
@@ -1251,11 +1385,16 @@ export default function MessageThreadPage() {
       dispatch(setCurrentCall(payload.call));
       dispatch(setIncomingCallPayload(null));
       dispatch(setCallStatus("ended"));
+      setManagedPopupCallId(null);
       cleanupWebRtcRuntime();
     };
 
     const handleMissedCallEvent = (payload: CallMissedEventPayload) => {
       if (String(payload.conversation_id) !== threadId) {
+        return;
+      }
+
+      if (shouldDeferCallHandlingToPopup(payload.call.id)) {
         return;
       }
 
@@ -1268,11 +1407,16 @@ export default function MessageThreadPage() {
       dispatch(setIncomingCallPayload(null));
       dispatch(setCallStatus("ended"));
       dispatch(setCallError("Missed call."));
+      setManagedPopupCallId(null);
       cleanupWebRtcRuntime();
     };
 
     const handleOfferEvent = (payload: WebRtcOfferSignalEvent) => {
       if (String(payload.conversation_id) !== threadId) {
+        return;
+      }
+
+      if (shouldDeferCallHandlingToPopup(payload.call.id)) {
         return;
       }
 
@@ -1297,6 +1441,10 @@ export default function MessageThreadPage() {
         return;
       }
 
+      if (shouldDeferCallHandlingToPopup(payload.call.id)) {
+        return;
+      }
+
       if (currentUserId !== null && Number(payload.signal.to_user_id) !== Number(currentUserId)) {
         return;
       }
@@ -1316,6 +1464,10 @@ export default function MessageThreadPage() {
 
     const handleIceCandidateEvent = (payload: WebRtcIceCandidateSignalEvent) => {
       if (String(payload.conversation_id) !== threadId) {
+        return;
+      }
+
+      if (shouldDeferCallHandlingToPopup(payload.call.id)) {
         return;
       }
 
@@ -1690,6 +1842,7 @@ export default function MessageThreadPage() {
     refreshPresenceSnapshotForUserIds,
     refreshThreads,
     resetLocalTypingRuntimeState,
+    shouldDeferCallHandlingToPopup,
     threadId,
   ]);
 
@@ -2735,12 +2888,14 @@ export default function MessageThreadPage() {
   }, [callMenuOpen]);
 
   useEffect(() => {
+    callLocalStreamRef.current = callLocalStream;
     if (activeCallLocalVideoRef.current) {
       activeCallLocalVideoRef.current.srcObject = callLocalStream ?? null;
     }
   }, [callLocalStream]);
 
   useEffect(() => {
+    callRemoteStreamRef.current = callRemoteStream;
     if (activeCallRemoteVideoRef.current) {
       activeCallRemoteVideoRef.current.srcObject = callRemoteStream ?? null;
     }
@@ -2780,22 +2935,32 @@ export default function MessageThreadPage() {
     }
 
     pendingIceCandidatesRef.current = [];
+    offerNegotiationCallIdRef.current = null;
+    offeredCallIdRef.current = null;
     toneControllerRef.current?.stop();
-    stopMediaStream(callLocalStream);
-    stopMediaStream(callRemoteStream);
+    stopMediaStream(callLocalStreamRef.current);
+    stopMediaStream(callRemoteStreamRef.current);
+    callLocalStreamRef.current = null;
+    callRemoteStreamRef.current = null;
     dispatch(setLocalStream(null));
     dispatch(setRemoteStream(null));
     dispatch(setMuted(false));
     dispatch(setCameraOff(false));
+    setIncomingCallActionLoading(null);
+    setCallWindowActionError(null);
     setCallDurationSeconds(0);
     setCallNetworkQuality("unavailable");
     setCallReconnectState("idle");
-  }, [callLocalStream, callRemoteStream, dispatch]);
+  }, [dispatch]);
 
   const cleanupCallState = useCallback(() => {
+    if (currentCall) {
+      setManagedPopupCallId(null);
+    }
+
     cleanupWebRtcRuntime();
     dispatch(resetCallState());
-  }, [cleanupWebRtcRuntime, dispatch]);
+  }, [cleanupWebRtcRuntime, currentCall, dispatch]);
 
   const playCallTone = useCallback((mode: "incoming" | "outgoing") => {
     if (!toneControllerRef.current) {
@@ -2817,6 +2982,85 @@ export default function MessageThreadPage() {
 
     setCallReconnectState("idle");
   }, []);
+
+  const isCallControllerClosed = useCallback((controller: WebRtcConnectionController | null): boolean => {
+    if (!controller) {
+      return true;
+    }
+
+    const peerConnection = controller.getPeerConnection();
+    return peerConnection.signalingState === "closed" || peerConnection.connectionState === "closed";
+  }, []);
+
+  const isCallStreamUsable = useCallback((stream: MediaStream | null): stream is MediaStream => {
+    if (!stream) {
+      return false;
+    }
+
+    const tracks = stream.getTracks();
+    if (tracks.length === 0) {
+      return false;
+    }
+
+    return tracks.some((track) => track.readyState === "live");
+  }, []);
+
+  const isRecoverableOfferStartError = useCallback(
+    (controller: WebRtcConnectionController | null, error: unknown): boolean => {
+      if (isCallControllerClosed(controller)) {
+        return true;
+      }
+
+      if (!(error instanceof Error)) {
+        return false;
+      }
+
+      const normalizedMessage = error.message.toLowerCase();
+      return (
+        normalizedMessage.includes("createoffer") &&
+        (normalizedMessage.includes("signalingstate is 'closed'") || normalizedMessage.includes("peerconnection"))
+      );
+    },
+    [isCallControllerClosed]
+  );
+
+  const requestPopupCallEndOnClose = useCallback((callId: number) => {
+    const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "");
+    if (!apiBaseUrl || typeof document === "undefined") {
+      return;
+    }
+
+    const xsrfTokenCookie = document.cookie
+      .split("; ")
+      .find((entry) => entry.startsWith("XSRF-TOKEN="))
+      ?.slice("XSRF-TOKEN=".length);
+
+    if (!xsrfTokenCookie) {
+      return;
+    }
+
+    const xsrfToken = decodeURIComponent(xsrfTokenCookie);
+
+    void fetch(`${apiBaseUrl}/calls/${callId}/end`, {
+      method: "POST",
+      credentials: "include",
+      keepalive: true,
+      headers: {
+        Accept: "application/json",
+        "X-XSRF-TOKEN": xsrfToken,
+      },
+    }).catch(() => undefined);
+  }, []);
+
+  const closePopupWindow = useCallback(() => {
+    if (!isCallWindow || typeof window === "undefined") {
+      return;
+    }
+
+    suppressPopupUnloadCallEndRef.current = true;
+    setManagedPopupCallId(null);
+    window.close();
+  }, [isCallWindow]);
 
   const beginCallReconnect = useCallback(
     (failureMessage: string) => {
@@ -2904,15 +3148,92 @@ export default function MessageThreadPage() {
 
   const ensureCallControllerWithLocalStream = useCallback(
     async (callId: number, callType: CallType): Promise<WebRtcConnectionController> => {
-      if (webRtcControllerRef.current) {
+      if (webRtcControllerRef.current && !isCallControllerClosed(webRtcControllerRef.current)) {
         return webRtcControllerRef.current;
       }
 
-      const localStream = await requestLocalCallStream(callType);
+      webRtcControllerRef.current = null;
+
+      const localStream = isCallStreamUsable(callLocalStream) ? callLocalStream : await requestLocalCallStream(callType);
       return createCallController(callId, localStream);
     },
-    [createCallController, requestLocalCallStream]
+    [callLocalStream, createCallController, isCallControllerClosed, isCallStreamUsable, requestLocalCallStream]
   );
+
+  const createOfferWithRecovery = useCallback(
+    async (callId: number, callType: CallType) => {
+      let controller = await ensureCallControllerWithLocalStream(callId, callType);
+
+      try {
+        return await controller.createOffer();
+      } catch (error) {
+        if (!isRecoverableOfferStartError(controller, error)) {
+          throw error;
+        }
+
+        cleanupWebRtcRuntime();
+        dispatch(setCallStatus("connecting"));
+
+        controller = await ensureCallControllerWithLocalStream(callId, callType);
+        return controller.createOffer();
+      }
+    },
+    [cleanupWebRtcRuntime, dispatch, ensureCallControllerWithLocalStream, isRecoverableOfferStartError]
+  );
+
+  useEffect(() => {
+    if (!isCallWindow || callWindowMode !== "calling") {
+      return;
+    }
+
+    if (
+      !currentCall ||
+      callStatus !== "calling" ||
+      currentCall.status !== "ringing" ||
+      currentUserId === null ||
+      Number(currentCall.caller_id) !== Number(currentUserId) ||
+      callLocalStream ||
+      webRtcControllerRef.current ||
+      localMediaWarmupInFlightRef.current
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    localMediaWarmupInFlightRef.current = true;
+
+    void requestLocalCallStream(currentCall.call_type)
+      .then((stream) => {
+        if (cancelled) {
+          stopMediaStream(stream);
+          return;
+        }
+
+        dispatch(setLocalStream(stream));
+        dispatch(setMuted(false));
+        dispatch(setCameraOff(stream.getVideoTracks().length === 0));
+        setCallWindowActionError(null);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) {
+          return;
+        }
+
+        if (error instanceof Error) {
+          setCallWindowActionError(error.message);
+          return;
+        }
+
+        setCallWindowActionError("Unable to access call media devices.");
+      })
+      .finally(() => {
+        localMediaWarmupInFlightRef.current = false;
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [callLocalStream, callStatus, callWindowMode, currentCall, currentUserId, dispatch, isCallWindow, requestLocalCallStream]);
 
   useEffect(() => {
     if (
@@ -2951,6 +3272,19 @@ export default function MessageThreadPage() {
   }, [callStatus, currentCall]);
 
   useEffect(() => {
+    if (!isCallWindow) {
+      return;
+    }
+
+    if (!currentCall || (callStatus !== "incoming" && callStatus !== "calling" && callStatus !== "connecting" && callStatus !== "active")) {
+      return;
+    }
+
+    suppressPopupUnloadCallEndRef.current = false;
+    popupUnloadCallEndSentRef.current = false;
+  }, [callStatus, currentCall, isCallWindow]);
+
+  useEffect(() => {
     if (callStatus === "calling") {
       playCallTone("outgoing");
       return;
@@ -2958,6 +3292,24 @@ export default function MessageThreadPage() {
 
     stopCallTone();
   }, [callStatus, playCallTone, stopCallTone]);
+
+  useEffect(() => {
+    if (!isCallWindow || typeof window === "undefined") {
+      return;
+    }
+
+    if (!currentCall || callStatus !== "ended") {
+      return;
+    }
+
+    const closeTimer = window.setTimeout(() => {
+      closePopupWindow();
+    }, 80);
+
+    return () => {
+      window.clearTimeout(closeTimer);
+    };
+  }, [callStatus, closePopupWindow, currentCall, isCallWindow]);
 
   useEffect(() => {
     return () => {
@@ -3064,22 +3416,48 @@ export default function MessageThreadPage() {
   }, [cleanupCallState, threadId]);
 
   useEffect(() => {
-    const handleBeforeUnload = () => {
+    const handlePopupUnload = () => {
+      if (isCallWindow) {
+        setManagedPopupCallId(null);
+
+        const shouldEndCallOnClose =
+          !suppressPopupUnloadCallEndRef.current &&
+          !popupUnloadCallEndSentRef.current &&
+          currentCall !== null &&
+          callStatus !== "idle" &&
+          callStatus !== "ended" &&
+          callStatus !== "failed" &&
+          currentCall.status !== "declined" &&
+          currentCall.status !== "missed" &&
+          currentCall.status !== "ended";
+
+        if (shouldEndCallOnClose) {
+          popupUnloadCallEndSentRef.current = true;
+          requestPopupCallEndOnClose(currentCall.id);
+        }
+      }
+
       cleanupWebRtcRuntime();
     };
 
-    window.addEventListener("beforeunload", handleBeforeUnload);
+    window.addEventListener("beforeunload", handlePopupUnload);
+    window.addEventListener("pagehide", handlePopupUnload);
 
     return () => {
-      window.removeEventListener("beforeunload", handleBeforeUnload);
+      window.removeEventListener("beforeunload", handlePopupUnload);
+      window.removeEventListener("pagehide", handlePopupUnload);
     };
-  }, [cleanupWebRtcRuntime]);
+  }, [callStatus, cleanupWebRtcRuntime, currentCall, isCallWindow, requestPopupCallEndOnClose]);
 
   useEffect(() => {
     return () => {
+      if (isCallWindow) {
+        setManagedPopupCallId(null);
+      }
+
       cleanupWebRtcRuntime();
     };
-  }, [cleanupWebRtcRuntime]);
+  }, [cleanupWebRtcRuntime, isCallWindow]);
 
   useEffect(() => {
     if (callStatus !== "failed") {
@@ -3088,6 +3466,18 @@ export default function MessageThreadPage() {
 
     cleanupWebRtcRuntime();
   }, [callStatus, cleanupWebRtcRuntime]);
+
+  useEffect(() => {
+    if (isCallWindow) {
+      return;
+    }
+
+    if (callStatus !== "ended" && callStatus !== "failed") {
+      return;
+    }
+
+    dispatch(resetCallState());
+  }, [callStatus, dispatch, isCallWindow]);
 
   useEffect(() => {
     if (echoConnectionStatus !== "disconnected" && echoConnectionStatus !== "failed") {
@@ -3106,25 +3496,83 @@ export default function MessageThreadPage() {
       return;
     }
 
+    const popup = openCallWindowPlaceholder(conversation.id);
+    if (!popup) {
+      setCallMenuOpen(false);
+      setCallActionError("Please allow popups in your browser to start calls.");
+      dispatch(setCallError(null));
+      return;
+    }
+
     setCallMenuOpen(false);
     setCallActionLoading(callType);
     setCallActionError(null);
     dispatch(setCallError(null));
 
     try {
+      const permissionProbeStream = await requestLocalCallStream(callType);
+      stopMediaStream(permissionProbeStream);
+
       const response = await callSignaling.startCall(conversation.id, { call_type: callType });
-      dispatch(setCurrentCall(response.data));
-      dispatch(setCallStatus("calling"));
+
+      setManagedPopupCallId(response.data.id);
+      navigateCallWindow(popup, {
+        conversationId: conversation.id,
+        callId: response.data.id,
+        mode: "calling",
+      });
+      dispatch(resetCallState());
     } catch (error) {
+      closeCallWindow(popup);
       const axiosError = error as AxiosError<ApiValidationErrorPayload>;
       const firstValidationError = axiosError.response?.data?.errors
         ? Object.values(axiosError.response.data.errors)[0]?.[0]
         : null;
-      const message = firstValidationError || axiosError.response?.data?.message || `Failed to start ${callType} call.`;
+      const directError = error instanceof Error && error.message.trim() ? error.message : null;
+      const message = firstValidationError || axiosError.response?.data?.message || directError || `Failed to start ${callType} call.`;
       setCallActionError(message);
-      dispatch(setCallError(message));
+      dispatch(setCallError(null));
     } finally {
       setCallActionLoading(null);
+    }
+  };
+
+  const handleAcceptIncomingCallInWindow = async () => {
+    if (!currentCall || callStatus !== "incoming" || !canAcceptPopupIncomingCall) {
+      return;
+    }
+
+    setIncomingCallActionLoading("accept");
+    setCallWindowActionError(null);
+
+    try {
+      const response = await callSignaling.acceptCall(currentCall.id);
+      dispatch(setCurrentCall(response.data));
+      dispatch(setIncomingCallPayload(null));
+      dispatch(setCallStatus("connecting"));
+      dispatch(setCallError(null));
+    } catch {
+      setCallWindowActionError("Unable to answer the call right now.");
+    } finally {
+      setIncomingCallActionLoading(null);
+    }
+  };
+
+  const handleDeclineIncomingCallInWindow = async () => {
+    if (!currentCall || callStatus !== "incoming") {
+      return;
+    }
+
+    setIncomingCallActionLoading("decline");
+    setCallWindowActionError(null);
+
+    try {
+      await callSignaling.declineCall(currentCall.id);
+      cleanupCallState();
+      closePopupWindow();
+    } catch {
+      setCallWindowActionError("Unable to decline the call right now.");
+      setIncomingCallActionLoading(null);
     }
   };
 
@@ -3151,6 +3599,7 @@ export default function MessageThreadPage() {
       // Keep local cleanup even if remote end request fails.
     } finally {
       cleanupCallState();
+      closePopupWindow();
     }
   };
 
@@ -3643,7 +4092,6 @@ export default function MessageThreadPage() {
     participant?.archived_at === null &&
     !isBlockedConversation;
   const removeModalCanEverywhere = removeModalMessage ? canRemoveEverywhereByPolicy(removeModalMessage) : false;
-  const showActiveCallPanel = Boolean(currentCall) && callStatus !== "idle" && callStatus !== "incoming";
   const activeCallDisplayName =
     (currentUserId !== null && Number(currentCall?.caller_id) === Number(currentUserId)
       ? currentCall?.receiver?.name
@@ -3653,6 +4101,8 @@ export default function MessageThreadPage() {
   const activeCallStatusLabel =
     callReconnectState === "reconnecting"
       ? "Reconnecting..."
+      : callStatus === "incoming"
+        ? "Incoming call..."
       : callStatus === "calling"
       ? currentCall?.status === "ringing"
         ? "Ringing..."
@@ -3675,6 +4125,36 @@ export default function MessageThreadPage() {
     Boolean(currentCall?.answered_at) ||
     callDurationSeconds > 0 ||
     (currentCall?.duration_seconds ?? 0) > 0;
+  const callWindowErrorMessage = callWindowActionError || callError || callActionError;
+
+  if (isCallWindow) {
+    return (
+      <ThreadPageCallWindow
+        displayName={activeCallDisplayName}
+        avatarUrl={callWindowAvatarUrl}
+        currentCall={currentCall}
+        callStatus={callStatus}
+        statusLabel={activeCallStatusLabel}
+        errorMessage={callWindowErrorMessage}
+        showDuration={showActiveCallDuration}
+        durationLabel={activeCallDurationLabel}
+        networkLabel={activeCallNetworkLabel}
+        networkToneClassName={activeCallNetworkToneClassName}
+        localStream={callLocalStream}
+        remoteStream={callRemoteStream}
+        isMuted={isCallMuted}
+        isCameraOff={isCallCameraOff}
+        localVideoRef={activeCallLocalVideoRef}
+        remoteVideoRef={activeCallRemoteVideoRef}
+        incomingActionLoading={incomingCallActionLoading}
+        onAcceptIncoming={() => void handleAcceptIncomingCallInWindow()}
+        onDeclineIncoming={() => void handleDeclineIncomingCallInWindow()}
+        onToggleMute={handleToggleMuteCall}
+        onToggleCamera={handleToggleCameraCall}
+        onEndCall={() => void handleEndActiveCall()}
+      />
+    );
+  }
 
   return (
     <ProtectedShell
@@ -4645,27 +5125,6 @@ export default function MessageThreadPage() {
         onPrevious={goToPreviousImage}
         onNext={goToNextImage}
       />
-
-      <ThreadActiveCallPanel
-        currentCall={currentCall}
-        show={showActiveCallPanel}
-        activeCallDisplayName={activeCallDisplayName}
-        activeCallStatusLabel={activeCallStatusLabel}
-        showActiveCallDuration={showActiveCallDuration}
-        activeCallDurationLabel={activeCallDurationLabel}
-        activeCallNetworkToneClassName={activeCallNetworkToneClassName}
-        activeCallNetworkLabel={activeCallNetworkLabel}
-        callRemoteStream={callRemoteStream}
-        callLocalStream={callLocalStream}
-        isCallCameraOff={isCallCameraOff}
-        isCallMuted={isCallMuted}
-        activeCallRemoteVideoRef={activeCallRemoteVideoRef}
-        activeCallLocalVideoRef={activeCallLocalVideoRef}
-        onEndCall={() => void handleEndActiveCall()}
-        onToggleMute={handleToggleMuteCall}
-        onToggleCamera={handleToggleCameraCall}
-      />
-
       <ThreadRemoveMessageModal
         message={removeModalMessage}
         mode={removeModalMode}

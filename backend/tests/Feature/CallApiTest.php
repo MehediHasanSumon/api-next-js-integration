@@ -197,3 +197,33 @@ test('call lifecycle dispatches expected broadcast events', function () {
             && $channels[1]->name === "private-user.{$receiver->id}";
     });
 });
+
+test('caller can restart after a stale caller-owned active call exists', function () {
+    $caller = User::factory()->create();
+    $receiver = User::factory()->create();
+    $conversation = createDirectCallConversation($caller, $receiver);
+
+    $firstStart = actingAs($caller)
+        ->postJson("/api/chat/conversations/{$conversation->id}/calls/start", [
+            'call_type' => 'audio',
+        ])
+        ->assertCreated()
+        ->assertJsonPath('data.status', 'ringing');
+
+    $firstCallId = (int) $firstStart->json('data.id');
+
+    $secondStart = actingAs($caller)
+        ->postJson("/api/chat/conversations/{$conversation->id}/calls/start", [
+            'call_type' => 'video',
+        ])
+        ->assertCreated()
+        ->assertJsonPath('data.status', 'ringing')
+        ->assertJsonPath('data.call_type', 'video');
+
+    $firstCall = $conversation->calls()->findOrFail($firstCallId);
+    $secondCall = $conversation->calls()->findOrFail((int) $secondStart->json('data.id'));
+
+    expect($firstCall->status)->toBe('ended');
+    expect($firstCall->end_reason)->toBe('restarted');
+    expect($secondCall->status)->toBe('ringing');
+});
