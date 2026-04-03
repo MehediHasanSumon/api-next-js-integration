@@ -1,6 +1,6 @@
 "use client";
 
-import type { CSSProperties, ReactNode, RefObject } from "react";
+import { useEffect, useRef, type CSSProperties, type ReactNode, type RefObject } from "react";
 import {
   Mic,
   MicOff,
@@ -112,14 +112,30 @@ export default function ThreadPageCallWindow({
   onToggleCamera,
   onEndCall,
 }: CallWindowProps) {
+  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const isIncoming = callStatus === "incoming";
   const isVideoCall = currentCall?.call_type === "video";
   const showVideoStage = isVideoCall && (remoteStream || localStream);
   const showRemoteVideo = isVideoCall && Boolean(remoteStream);
   const topLabel = currentCall?.call_type === "video" ? "Video call" : "Audio call";
 
+  useEffect(() => {
+    if (!remoteAudioRef.current || isVideoCall) {
+      return;
+    }
+
+    remoteAudioRef.current.srcObject = remoteStream ?? null;
+
+    if (!remoteStream) {
+      return;
+    }
+
+    void remoteAudioRef.current.play().catch(() => undefined);
+  }, [isVideoCall, remoteStream]);
+
   return (
     <div className="relative min-h-screen overflow-hidden bg-[#111315] text-white">
+      {!isVideoCall ? <audio ref={remoteAudioRef} autoPlay playsInline /> : null}
       <div className="absolute inset-0 scale-110 blur-3xl" style={backgroundStyle(avatarUrl)} />
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(148,163,184,0.08),transparent_34%),linear-gradient(180deg,rgba(22,24,28,0.52),rgba(15,23,42,0.78))]" />
       <div className="absolute inset-0 bg-black/30" />

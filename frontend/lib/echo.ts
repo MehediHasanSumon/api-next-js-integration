@@ -8,6 +8,7 @@ import { ensureCsrfCookie } from "@/lib/csrf";
 declare global {
   interface Window {
     Pusher: typeof Pusher;
+    __laravelEchoInstance?: Echo<"reverb">;
   }
 }
 
@@ -86,6 +87,8 @@ export const getEcho = (): Echo<"reverb"> | null => {
     }),
   });
 
+  window.__laravelEchoInstance = echoInstance;
+
   return echoInstance;
 };
 
@@ -95,5 +98,8 @@ export const disconnectEcho = (): void => {
   }
 
   echoInstance.disconnect();
+  if (typeof window !== "undefined") {
+    delete window.__laravelEchoInstance;
+  }
   echoInstance = null;
 };

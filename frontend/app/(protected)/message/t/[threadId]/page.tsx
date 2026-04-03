@@ -1218,6 +1218,28 @@ export default function MessageThreadPage() {
     [isCallWindow]
   );
 
+  const flushPendingIceCandidates = useCallback(async () => {
+    if (!webRtcControllerRef.current || pendingIceCandidatesRef.current.length === 0) {
+      return;
+    }
+
+    const peerConnection = webRtcControllerRef.current.getPeerConnection();
+    if (!peerConnection.remoteDescription) {
+      return;
+    }
+
+    const queuedCandidates = [...pendingIceCandidatesRef.current];
+    pendingIceCandidatesRef.current = [];
+
+    for (const candidate of queuedCandidates) {
+      try {
+        await webRtcControllerRef.current.addIceCandidate(candidate);
+      } catch {
+        pendingIceCandidatesRef.current.push(candidate);
+      }
+    }
+  }, []);
+
   useEffect(() => {
     if (!threadId || !callWindowCallId) {
       return;
@@ -1424,10 +1446,16 @@ export default function MessageThreadPage() {
         return;
       }
 
+      const dedupeKey = `webrtc.offer:${threadId}:${payload.call.id}:${payload.signal.from_user_id}:${payload.signal.to_user_id}:${payload.sent_at ?? ""}`;
+      if (!rememberRealtimeEvent(dedupeKey)) {
+        return;
+      }
+
       void (async () => {
         try {
           const controller = await ensureCallControllerWithLocalStream(payload.call.id, payload.call.call_type);
           await controller.applyRemoteDescription(payload.signal);
+          await flushPendingIceCandidates();
           const answer = await controller.createAnswer();
           await callSignaling.sendAnswer(payload.call.id, answer);
         } catch {
@@ -1449,6 +1477,11 @@ export default function MessageThreadPage() {
         return;
       }
 
+      const dedupeKey = `webrtc.answer:${threadId}:${payload.call.id}:${payload.signal.from_user_id}:${payload.signal.to_user_id}:${payload.sent_at ?? ""}`;
+      if (!rememberRealtimeEvent(dedupeKey)) {
+        return;
+      }
+
       void (async () => {
         try {
           if (!webRtcControllerRef.current) {
@@ -1456,6 +1489,7 @@ export default function MessageThreadPage() {
           }
 
           await webRtcControllerRef.current.applyRemoteDescription(payload.signal);
+          await flushPendingIceCandidates();
         } catch {
           dispatch(setCallError("Failed to apply WebRTC answer."));
         }
@@ -1475,13 +1509,24 @@ export default function MessageThreadPage() {
         return;
       }
 
+      const dedupeKey = `webrtc.ice:${threadId}:${payload.call.id}:${payload.signal.from_user_id}:${payload.signal.to_user_id}:${payload.signal.sdp_mid ?? ""}:${payload.signal.sdp_m_line_index ?? ""}:${payload.signal.candidate}:${payload.sent_at ?? ""}`;
+      if (!rememberRealtimeEvent(dedupeKey)) {
+        return;
+      }
+
       if (!webRtcControllerRef.current) {
         pendingIceCandidatesRef.current.push(payload.signal);
         return;
       }
 
+      const peerConnection = webRtcControllerRef.current.getPeerConnection();
+      if (!peerConnection.remoteDescription) {
+        pendingIceCandidatesRef.current.push(payload.signal);
+        return;
+      }
+
       void webRtcControllerRef.current.addIceCandidate(payload.signal).catch(() => {
-        dispatch(setCallError("Failed to apply ICE candidate."));
+        pendingIceCandidatesRef.current.push(payload.signal);
       });
     };
 
@@ -1842,6 +1887,7 @@ export default function MessageThreadPage() {
     refreshPresenceSnapshotForUserIds,
     refreshThreads,
     resetLocalTypingRuntimeState,
+    flushPendingIceCandidates,
     shouldDeferCallHandlingToPopup,
     threadId,
   ]);
@@ -3128,14 +3174,6 @@ export default function MessageThreadPage() {
       dispatch(setRemoteStream(controller.getRemoteStream()));
       dispatch(setMuted(false));
       dispatch(setCameraOff(localStream.getVideoTracks().length === 0));
-
-      if (pendingIceCandidatesRef.current.length > 0) {
-        const queuedCandidates = [...pendingIceCandidatesRef.current];
-        pendingIceCandidatesRef.current = [];
-        queuedCandidates.forEach((candidate) => {
-          void controller.addIceCandidate(candidate).catch(() => undefined);
-        });
-      }
 
       return controller;
     },

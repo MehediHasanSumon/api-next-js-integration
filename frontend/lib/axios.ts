@@ -28,6 +28,13 @@ api.interceptors.request.use(
       await ensureCsrfCookie();
     }
 
+    if (typeof window !== "undefined") {
+      const socketId = window.__laravelEchoInstance?.socketId?.();
+      if (socketId) {
+        config.headers.set("X-Socket-ID", socketId);
+      }
+    }
+
     return config;
   },
   (error) => {
