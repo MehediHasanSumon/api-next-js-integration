@@ -1,6 +1,6 @@
 "use client";
 
-import type { RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { Search, X } from "lucide-react";
 import Button from "@/components/Button";
 import UserAvatar from "@/components/messenger/UserAvatar";
@@ -453,6 +453,71 @@ export function ThreadActiveCallPanel({
   onToggleMute,
   onToggleCamera,
 }: ActiveCallPanelProps) {
+  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+  const [isRemoteAudioBlocked, setIsRemoteAudioBlocked] = useState(false);
+  const isAudioCall = currentCall?.call_type !== "video";
+
+  const tryPlayRemoteAudio = useCallback(() => {
+    const audioElement = remoteAudioRef.current;
+    if (!audioElement || !isAudioCall || !callRemoteStream) {
+      return;
+    }
+
+    audioElement.srcObject = callRemoteStream;
+    audioElement.muted = false;
+    audioElement.volume = 1;
+
+    void audioElement
+      .play()
+      .then(() => {
+        setIsRemoteAudioBlocked(false);
+      })
+      .catch(() => {
+        setIsRemoteAudioBlocked(true);
+      });
+  }, [callRemoteStream, isAudioCall]);
+
+  useEffect(() => {
+    if (!remoteAudioRef.current || !show || !isAudioCall) {
+      return;
+    }
+
+    const audioElement = remoteAudioRef.current;
+    audioElement.srcObject = callRemoteStream ?? null;
+    audioElement.muted = false;
+    audioElement.volume = 1;
+
+    if (!callRemoteStream) {
+      audioElement.pause();
+      return;
+    }
+
+    tryPlayRemoteAudio();
+    callRemoteStream.addEventListener("addtrack", tryPlayRemoteAudio);
+
+    return () => {
+      callRemoteStream.removeEventListener("addtrack", tryPlayRemoteAudio);
+    };
+  }, [callRemoteStream, isAudioCall, show]);
+
+  useEffect(() => {
+    if (!isRemoteAudioBlocked || !isAudioCall) {
+      return;
+    }
+
+    const handleUserActivation = () => {
+      tryPlayRemoteAudio();
+    };
+
+    window.addEventListener("pointerdown", handleUserActivation);
+    window.addEventListener("keydown", handleUserActivation);
+
+    return () => {
+      window.removeEventListener("pointerdown", handleUserActivation);
+      window.removeEventListener("keydown", handleUserActivation);
+    };
+  }, [isAudioCall, isRemoteAudioBlocked, show, tryPlayRemoteAudio]);
+
   if (!show || !currentCall) {
     return null;
   }
@@ -460,6 +525,7 @@ export function ThreadActiveCallPanel({
   return (
     <div className="fixed inset-x-0 bottom-4 z-40 flex justify-center px-4">
       <div className="w-full max-w-4xl overflow-hidden rounded-[28px] border border-slate-200/80 bg-white/95 shadow-2xl backdrop-blur">
+        {isAudioCall ? <audio ref={remoteAudioRef} autoPlay playsInline /> : null}
         <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-5 py-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">
@@ -569,6 +635,16 @@ export function ThreadActiveCallPanel({
                   End call
                 </Button>
               </div>
+              {isRemoteAudioBlocked ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="mt-4 rounded-full"
+                  onClick={tryPlayRemoteAudio}
+                >
+                  Enable call audio
+                </Button>
+              ) : null}
             </div>
           </div>
         )}

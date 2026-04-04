@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, type CSSProperties, type ReactNode, type RefObject } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
+import { useCallback } from "react";
 import {
   Mic,
   MicOff,
@@ -113,25 +114,73 @@ export default function ThreadPageCallWindow({
   onEndCall,
 }: CallWindowProps) {
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+  const [isRemoteAudioBlocked, setIsRemoteAudioBlocked] = useState(false);
   const isIncoming = callStatus === "incoming";
   const isVideoCall = currentCall?.call_type === "video";
   const showVideoStage = isVideoCall && (remoteStream || localStream);
   const showRemoteVideo = isVideoCall && Boolean(remoteStream);
   const topLabel = currentCall?.call_type === "video" ? "Video call" : "Audio call";
 
+  const tryPlayRemoteAudio = useCallback(() => {
+    const audioElement = remoteAudioRef.current;
+    if (!audioElement || isVideoCall || !remoteStream) {
+      return;
+    }
+
+    audioElement.srcObject = remoteStream;
+    audioElement.muted = false;
+    audioElement.volume = 1;
+
+    void audioElement
+      .play()
+      .then(() => {
+        setIsRemoteAudioBlocked(false);
+      })
+      .catch(() => {
+        setIsRemoteAudioBlocked(true);
+      });
+  }, [isVideoCall, remoteStream]);
+
   useEffect(() => {
     if (!remoteAudioRef.current || isVideoCall) {
       return;
     }
 
-    remoteAudioRef.current.srcObject = remoteStream ?? null;
+    const audioElement = remoteAudioRef.current;
+    audioElement.srcObject = remoteStream ?? null;
+    audioElement.muted = false;
+    audioElement.volume = 1;
 
     if (!remoteStream) {
+      audioElement.pause();
       return;
     }
 
-    void remoteAudioRef.current.play().catch(() => undefined);
+    tryPlayRemoteAudio();
+    remoteStream.addEventListener("addtrack", tryPlayRemoteAudio);
+
+    return () => {
+      remoteStream.removeEventListener("addtrack", tryPlayRemoteAudio);
+    };
   }, [isVideoCall, remoteStream]);
+
+  useEffect(() => {
+    if (!isRemoteAudioBlocked || isVideoCall) {
+      return;
+    }
+
+    const handleUserActivation = () => {
+      tryPlayRemoteAudio();
+    };
+
+    window.addEventListener("pointerdown", handleUserActivation);
+    window.addEventListener("keydown", handleUserActivation);
+
+    return () => {
+      window.removeEventListener("pointerdown", handleUserActivation);
+      window.removeEventListener("keydown", handleUserActivation);
+    };
+  }, [isRemoteAudioBlocked, isVideoCall, tryPlayRemoteAudio]);
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-[#111315] text-white">
@@ -244,6 +293,16 @@ export default function ThreadPageCallWindow({
             <div className="mt-6 rounded-2xl border border-rose-400/25 bg-rose-500/12 px-4 py-3 text-sm text-rose-100 backdrop-blur">
               {errorMessage}
             </div>
+          ) : null}
+
+          {isRemoteAudioBlocked && !isVideoCall ? (
+              <button
+                type="button"
+              onClick={tryPlayRemoteAudio}
+              className="mt-4 rounded-full border border-amber-300/35 bg-amber-400/12 px-4 py-2 text-sm font-medium text-amber-100 backdrop-blur hover:bg-amber-400/18"
+            >
+              Enable call audio
+            </button>
           ) : null}
         </main>
 

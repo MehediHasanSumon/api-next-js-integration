@@ -30,11 +30,31 @@ export interface WebRtcConnectionController {
 
 const defaultIceServers: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
 
+const stripWrappingQuotes = (value: string): string => value.replace(/^['"]+|['"]+$/g, "").trim();
+
+const normalizeIceUrl = (value: string): string | null => {
+  const sanitizedValue = stripWrappingQuotes(value).replace(/^(stuns?|turns?):\/\//i, "$1:");
+  if (!sanitizedValue) {
+    return null;
+  }
+
+  if (!/^(stun|stuns|turn|turns):/i.test(sanitizedValue)) {
+    return null;
+  }
+
+  const hostPart = sanitizedValue.replace(/^(stun|stuns|turn|turns):/i, "");
+  if (!hostPart || hostPart.startsWith("/") || /\s/.test(hostPart) || hostPart.includes("@")) {
+    return null;
+  }
+
+  return sanitizedValue;
+};
+
 const splitUrls = (value: string | undefined): string[] =>
   (value ?? "")
     .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
+    .map((item) => normalizeIceUrl(item))
+    .filter((item): item is string => Boolean(item));
 
 export const getRtcConfiguration = (): RTCConfiguration => {
   const stunUrls = splitUrls(process.env.NEXT_PUBLIC_STUN_URL);
@@ -102,6 +122,13 @@ export const createWebRtcConnection = (
   }
 
   peerConnection.ontrack = (event) => {
+    if (event.streams.length === 0) {
+      const exists = remoteStream.getTracks().some((item) => item.id === event.track.id);
+      if (!exists) {
+        remoteStream.addTrack(event.track);
+      }
+    }
+
     event.streams.forEach((stream) => {
       stream.getTracks().forEach((track) => {
         const exists = remoteStream.getTracks().some((item) => item.id === track.id);
