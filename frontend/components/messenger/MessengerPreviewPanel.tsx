@@ -51,7 +51,7 @@ export default function MessengerPreviewPanel({ previewThread, previewOnline }: 
             </div>
 
             <Link
-              href={`/message/t/${previewThread.id}`}
+              href={`/messages/t/${previewThread.id}`}
               className="mt-6 inline-flex rounded-full bg-slate-900 px-5 py-2.5 text-xs font-semibold uppercase tracking-[0.18em] text-white transition hover:bg-slate-800"
             >
               Open Conversation

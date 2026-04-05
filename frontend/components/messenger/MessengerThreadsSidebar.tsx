@@ -152,7 +152,7 @@ export default function MessengerThreadsSidebar({
         (action === "delete" || action === "archive" || action === "block");
 
       if (shouldExitActiveThread && pathname?.startsWith("/message/")) {
-        router.push("/masseges");
+        router.push("/messages");
       }
     } catch (error) {
       const axiosError = error as AxiosError<{ message?: string }>;
@@ -333,7 +333,7 @@ export default function MessengerThreadsSidebar({
                     setOpenThreadMenuId(thread.id);
                   }}
                 >
-                  <Link href={`/message/t/${thread.id}`} className="flex min-w-0 flex-1 items-start gap-3">
+                  <Link href={`/messages/t/${thread.id}`} className="flex min-w-0 flex-1 items-start gap-3">
                     <div className="mt-0.5 shrink-0">
                       <UserAvatar name={thread.name} src={avatarUrl} size={40} isOnline={isOnline} showStatus={showStatus} />
                     </div>
@@ -447,27 +447,27 @@ export default function MessengerThreadsSidebar({
         )}
       </MessengerSidebar>
 
-      <NewChatModal
-        isOpen={newChatModalState.isOpen}
-        error={newChatModalState.error}
-        isCreating={newChatModalState.isCreating}
-        isLoading={newChatModalState.isLoading}
-        usersError={newChatModalState.usersError}
-        users={newChatModalState.users}
-        presenceByUserId={presenceByUserId}
-        selectedUserIds={newChatModalState.selectedUserIds}
-        searchValue={newChatModalState.searchValue}
-        groupNameValue={newChatModalState.groupNameValue}
-        onClose={newChatModalState.onClose}
-        onSearchChange={newChatModalState.onSearchChange}
-        onGroupNameChange={newChatModalState.onGroupNameChange}
-        onToggleUser={newChatModalState.onToggleUser}
-        onSubmit={newChatModalState.onSubmit}
-      />
-
       {portalMounted
         ? createPortal(
             <>
+              <NewChatModal
+                isOpen={newChatModalState.isOpen}
+                error={newChatModalState.error}
+                isCreating={newChatModalState.isCreating}
+                isLoading={newChatModalState.isLoading}
+                usersError={newChatModalState.usersError}
+                users={newChatModalState.users}
+                presenceByUserId={presenceByUserId}
+                selectedUserIds={newChatModalState.selectedUserIds}
+                searchValue={newChatModalState.searchValue}
+                groupNameValue={newChatModalState.groupNameValue}
+                onClose={newChatModalState.onClose}
+                onSearchChange={newChatModalState.onSearchChange}
+                onGroupNameChange={newChatModalState.onGroupNameChange}
+                onToggleUser={newChatModalState.onToggleUser}
+                onSubmit={newChatModalState.onSubmit}
+              />
+
               <DeleteConfirmModal
                 isOpen={Boolean(deleteTarget)}
                 title="Delete conversation"

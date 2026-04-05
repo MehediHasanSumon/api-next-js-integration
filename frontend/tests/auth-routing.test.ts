@@ -7,6 +7,7 @@ import {
 
 describe("protected route coverage", () => {
   it("includes message routes in protected prefixes", () => {
+    expect(PROTECTED_PREFIXES).toContain("/messages");
     expect(PROTECTED_PREFIXES).toContain("/masseges");
     expect(PROTECTED_PREFIXES).toContain("/message");
   });
@@ -33,6 +34,6 @@ describe("redirect safety", () => {
 
   it("returns safe redirect target as-is", () => {
     expect(resolvePostLoginRedirect("/permissions")).toBe("/permissions");
-    expect(resolvePostLoginRedirect("/message/t/123")).toBe("/message/t/123");
+    expect(resolvePostLoginRedirect("/messages/t/123")).toBe("/messages/t/123");
   });
 });

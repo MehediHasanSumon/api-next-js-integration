@@ -6,16 +6,16 @@ import { useState } from "react";
 import Button from "@/components/Button";
 
 const managementLinks = [
-  { href: "/users", label: "Users Managements" },
-  { href: "/roles", label: "Roles Managements" },
-  { href: "/permissions", label: "Permission Managements" },
+  { href: "/users", label: "User Management" },
+  { href: "/roles", label: "Role Management" },
+  { href: "/permissions", label: "Permission Management" },
 ];
 
 export default function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   const pathname = usePathname();
 
-  const [dropdowns, setDropdowns] = useState({ userManagements: true });
-  const isUserManagementsOpen = dropdowns.userManagements;
+  const [dropdowns, setDropdowns] = useState({ management: true });
+  const isManagementOpen = dropdowns.management;
 
   const closeOnMobile = () => {
     if (window.innerWidth < 1024) {
@@ -24,7 +24,11 @@ export default function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose:
   };
 
   const dashboardActive = pathname === "/dashboard";
-  const messagesActive = pathname === "/masseges" || pathname.startsWith("/message/");
+  const messagesActive =
+    pathname === "/messages" ||
+    pathname === "/masseges" ||
+    pathname.startsWith("/messages/") ||
+    pathname.startsWith("/message/");
 
   return (
     <>
@@ -72,7 +76,7 @@ export default function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose:
           </Link>
 
           <Link
-            href="/masseges"
+            href="/messages"
             className={`mt-2 flex cursor-pointer items-center gap-3 rounded-xl px-3.5 py-3 text-sm font-semibold transition-all duration-200 ${
               messagesActive ? "bg-gradient-to-r from-slate-900 to-slate-800 text-white shadow-soft ring-1 ring-slate-800/70" : "text-slate-700 hover:bg-white hover:shadow-sm"
             }`}
@@ -86,24 +90,24 @@ export default function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose:
             >
               M
             </span>
-            <span>Masseges</span>
+            <span>Messages</span>
           </Link>
 
           <div className="mt-2 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm transition-all duration-200 hover:border-slate-300">
             <Button
               type="button"
-              onClick={() => setDropdowns((prev) => ({ ...prev, userManagements: !prev.userManagements }))}
+              onClick={() => setDropdowns((prev) => ({ ...prev, management: !prev.management }))}
               variant="ghost"
               size="md"
               fullWidth
-              className={`justify-between px-3.5 py-3 text-left text-sm font-medium text-slate-700 ${isUserManagementsOpen ? "bg-slate-50" : ""}`}
+              className={`justify-between px-3.5 py-3 text-left text-sm font-medium text-slate-700 ${isManagementOpen ? "bg-slate-50" : ""}`}
             >
               <span className="flex items-center gap-3">
                 <span className="inline-block h-2 w-2 rounded-sm bg-slate-400" aria-hidden="true"></span>
-                <span>User Managements</span>
+                <span>Management</span>
               </span>
               <svg
-                className={`h-4 w-4 text-slate-400 transition-transform duration-300 ${isUserManagementsOpen ? "rotate-180" : ""}`}
+                className={`h-4 w-4 text-slate-400 transition-transform duration-300 ${isManagementOpen ? "rotate-180" : ""}`}
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
@@ -113,7 +117,7 @@ export default function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose:
             </Button>
 
             <div
-              className={`grid overflow-hidden transition-all duration-300 ease-out ${isUserManagementsOpen ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"}`}
+              className={`grid overflow-hidden transition-all duration-300 ease-out ${isManagementOpen ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"}`}
             >
               <div className="min-h-0">
                 <div className="space-y-1 px-3 pb-3 pt-1">

@@ -6,8 +6,6 @@ export type MessageType = "text" | "image" | "file" | "voice" | "system";
 export type AttachmentType = "image" | "file" | "voice";
 export type MessageRemovalMode = "for_you" | "everywhere";
 export type MessageReactionAction = "added" | "removed";
-export type CallType = "audio" | "video";
-export type CallStatus = "idle" | "calling" | "incoming" | "connecting" | "active" | "ended" | "failed";
 
 export type ConversationFilter = "inbox" | "unread" | "online" | "requests" | "archived" | "blocked" | "all";
 export type RequestAction = "accept" | "decline";
@@ -217,88 +215,6 @@ export interface ConversationShowResponse {
 export interface ConversationActionResponse {
   message: string;
   conversation_id: ConversationId;
-}
-
-export interface CallParty {
-  id: number;
-  name: string;
-  email: string;
-}
-
-export interface CallSummary {
-  id: number;
-  conversation_id: number;
-  caller_id: number;
-  receiver_id: number | null;
-  call_type: CallType;
-  status: string;
-  started_at: string | null;
-  answered_at: string | null;
-  ended_at: string | null;
-  duration_seconds: number | null;
-  end_reason: string | null;
-  metadata: Record<string, unknown> | null;
-  created_at: string | null;
-  updated_at: string | null;
-  conversation?: {
-    id: number;
-    type: string | null;
-  } | null;
-  caller: CallParty | null;
-  receiver: CallParty | null;
-}
-
-export interface StartCallPayload {
-  call_type: CallType;
-}
-
-export interface CallResponse {
-  message?: string;
-  data: CallSummary;
-}
-
-export interface CallEventPayload {
-  conversation_id: number;
-  call: CallSummary;
-  sent_at?: string;
-}
-
-export type CallMissedEventPayload = CallEventPayload;
-
-export interface WebRtcSessionDescriptionPayload {
-  type: "offer" | "answer";
-  sdp: string;
-}
-
-export interface WebRtcIceCandidatePayload {
-  candidate: string;
-  sdp_mid?: string | null;
-  sdp_m_line_index?: number | null;
-  username_fragment?: string | null;
-}
-
-export interface WebRtcOfferSignalEvent extends CallEventPayload {
-  signal: WebRtcSessionDescriptionPayload & {
-    from_user_id: number;
-    to_user_id: number;
-    call_id: number;
-  };
-}
-
-export interface WebRtcAnswerSignalEvent extends CallEventPayload {
-  signal: WebRtcSessionDescriptionPayload & {
-    from_user_id: number;
-    to_user_id: number;
-    call_id: number;
-  };
-}
-
-export interface WebRtcIceCandidateSignalEvent extends CallEventPayload {
-  signal: WebRtcIceCandidatePayload & {
-    from_user_id: number;
-    to_user_id: number;
-    call_id: number;
-  };
 }
 
 export interface ConversationMuteResponse extends ConversationActionResponse {

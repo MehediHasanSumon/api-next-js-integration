@@ -3,6 +3,7 @@ export const PROTECTED_PREFIXES = [
   "/users",
   "/roles",
   "/permissions",
+  "/messages",
   "/masseges",
   "/message",
 ];

@@ -25,18 +25,7 @@ export async function proxy(request: NextRequest) {
 
   const hasSession = hasSessionCookie(request);
 
-  console.info("[auth][proxy] request", {
-    pathname,
-    isProtectedPath,
-    isGuestOnlyPath,
-    hasSession,
-  });
-
   if (isProtectedPath && !hasSession) {
-    console.warn("[auth][proxy] protected route without session cookie, redirecting to /login", {
-      pathname,
-    });
-
     const loginUrl = new URL("/login", request.url);
     loginUrl.searchParams.set("redirect", pathname);
     return NextResponse.redirect(loginUrl);
@@ -51,6 +40,7 @@ export const config = {
     "/users/:path*",
     "/roles/:path*",
     "/permissions/:path*",
+    "/messages/:path*",
     "/masseges/:path*",
     "/message/:path*",
     "/login",

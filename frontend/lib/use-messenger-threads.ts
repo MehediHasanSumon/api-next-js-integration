@@ -427,7 +427,7 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
         const existingConversationId = findDirectConversationId(selectedUserIds[0], allConversations);
         if (existingConversationId) {
           closeNewChatModal();
-          router.push(`/message/t/${existingConversationId}`);
+          router.push(`/messages/t/${existingConversationId}`);
           return;
         }
       }
@@ -441,7 +441,7 @@ export const useMessengerThreads = (options: UseMessengerThreadsOptions = {}) =>
             });
       closeNewChatModal();
       await refreshThreads();
-      router.push(`/message/t/${response.conversation_id}`);
+      router.push(`/messages/t/${response.conversation_id}`);
     } catch (error) {
       const axiosError = error as AxiosError<{ message?: string; errors?: Record<string, string[]> }>;
       const firstValidationError = Object.values(axiosError.response?.data?.errors ?? {})[0]?.[0];

@@ -2,6 +2,6 @@
 
 import MessageThreadScreen from "@/components/messenger/thread/MessageThreadScreen";
 
-export default function MessageThreadPage() {
+export default function MessagesThreadPage() {
   return <MessageThreadScreen />;
 }

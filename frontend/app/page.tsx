@@ -6,8 +6,8 @@ const highlights = [
     description: "Direct chat, group conversations, typing state, reactions, forwarding, and private attachments.",
   },
   {
-    title: "Calls and Presence",
-    description: "Audio and video calling with live signaling, incoming call handling, and online status tracking.",
+    title: "Presence and Activity",
+    description: "Online status tracking, live message updates, and shared team visibility across conversations.",
   },
   {
     title: "Admin Control",
@@ -19,7 +19,7 @@ const shortcuts = [
   { href: "/login", label: "Sign In" },
   { href: "/register", label: "Create Account" },
   { href: "/dashboard", label: "Open Dashboard" },
-  { href: "/masseges", label: "Go to Messenger" },
+  { href: "/messages", label: "Go to Messages" },
 ];
 
 export default function Home() {
@@ -56,7 +56,7 @@ export default function Home() {
         <div className="grid flex-1 items-center gap-10 py-12 lg:grid-cols-[minmax(0,1.1fr)_460px] lg:py-16">
           <div>
             <div className="inline-flex rounded-full border border-sky-200 bg-white/80 px-4 py-2 text-xs font-semibold uppercase tracking-[0.24em] text-sky-700">
-              Messenger, Calls, Presence, RBAC
+              Messenger, Presence, RBAC
             </div>
 
             <h2 className="mt-6 max-w-3xl text-4xl font-semibold leading-tight sm:text-5xl lg:text-6xl">
@@ -64,8 +64,8 @@ export default function Home() {
             </h2>
 
             <p className="mt-5 max-w-2xl text-base leading-7 text-slate-600 sm:text-lg">
-              This workspace combines realtime messaging, direct and group collaboration, audio and video calls,
-              presence tracking, and admin management into a single flow.
+              This workspace combines realtime messaging, direct and group collaboration, presence tracking, and
+              admin management into a single flow.
             </p>
 
             <div className="mt-8 flex flex-wrap gap-3">
@@ -76,10 +76,10 @@ export default function Home() {
                 Explore Dashboard
               </Link>
               <Link
-                href="/masseges"
+                href="/messages"
                 className="inline-flex items-center rounded-full border border-slate-300 bg-white/85 px-5 py-3 text-sm font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-white"
               >
-                Open Messenger
+                Open Messages
               </Link>
             </div>
 
@@ -127,7 +127,7 @@ export default function Home() {
                   <div className="flex items-center justify-between">
                     <div>
                       <p className="text-sm font-semibold">Conversation Activity</p>
-                      <p className="mt-1 text-xs text-slate-400">Realtime message, reaction, and call events</p>
+                      <p className="mt-1 text-xs text-slate-400">Realtime message, reaction, and activity events</p>
                     </div>
                     <span className="text-xs font-semibold text-sky-300">Streaming</span>
                   </div>
@@ -139,7 +139,7 @@ export default function Home() {
                     </div>
                     <div className="rounded-2xl bg-white/5 px-4 py-3">
                       <p className="text-sm font-medium">Support Room</p>
-                      <p className="mt-1 text-xs text-slate-400">Call history, presence updates, and moderation actions available.</p>
+                      <p className="mt-1 text-xs text-slate-400">Presence updates and moderation actions available.</p>
                     </div>
                   </div>
                 </div>
