@@ -4,6 +4,7 @@ import { useState } from "react";
 import Sidebar from "@/components/Sidebar";
 import Topbar from "@/components/Topbar";
 import Head from "@/components/Head";
+import GlobalMessageToast from "@/components/GlobalMessageToast";
 
 interface ProtectedShellProps {
   title: string;
@@ -27,6 +28,7 @@ export default function ProtectedShell({ title, description, showPageHeader = tr
 
         <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
         <Topbar isSidebarOpen={sidebarOpen} onMenuClick={() => setSidebarOpen(!sidebarOpen)} />
+        <GlobalMessageToast />
 
         <main className={`relative pt-20 transition-[padding] duration-200 ${sidebarOpen ? "lg:pl-72" : "lg:pl-0"}`}>
           <div className="px-4 pb-10 sm:px-6 lg:px-10">

@@ -33,7 +33,7 @@ export default function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose:
   return (
     <>
       <div
-        className={`fixed inset-0 z-30 bg-slate-900/40 lg:hidden ${isOpen ? "" : "hidden"}`}
+        className={`fixed inset-x-0 bottom-0 top-16 z-[35] bg-slate-900/22 backdrop-blur-[1px] lg:hidden ${isOpen ? "" : "hidden"}`}
         onClick={onClose}
       ></div>
 
